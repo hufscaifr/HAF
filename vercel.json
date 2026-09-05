@@ -1,6 +1,4 @@
 {
-  "buildCommand": "cd FrontEnd/haf_website && npm install && npm run build",
-  "outputDirectory": "FrontEnd/haf_website/build",
   "rewrites": [
     {
       "source": "/(.*)",
