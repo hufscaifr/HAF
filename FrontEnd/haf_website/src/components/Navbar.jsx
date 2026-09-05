@@ -30,8 +30,8 @@ function Navbar() {
     },
     {
       label: 'Equity Research',
-      href: 'https://caifr.framer.website/',
-      external: true,
+      href: '/equity_research',
+      external: false,
     },
     {
       label: 'JOIN US',
