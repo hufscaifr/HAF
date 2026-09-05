@@ -1,0 +1,12 @@
+.venv/
+.venv_strategyBacktesting/
+__pycache__/
+*.pyc
+.env
+.env.local
+.DS_Store
+.cache/
+~$*
+node_modules/
+dist/
+build/

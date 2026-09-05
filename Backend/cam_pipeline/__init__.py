@@ -1,0 +1,1 @@
+"""Corporate analysis model package."""
