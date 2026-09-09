@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -1119,19 +1120,37 @@ def build_chart_research_response(
     payload: ChartResearchRequest,
     http_request: Request,
 ) -> dict:
+    request_started_at = time.perf_counter()
+    stage_started_at = request_started_at
+
+    def log_stage(stage: str) -> None:
+        nonlocal stage_started_at
+        now = time.perf_counter()
+        logger.info(
+            "company-dashboard stage=%s elapsed=%.2fs total=%.2fs",
+            stage,
+            now - stage_started_at,
+            now - request_started_at,
+        )
+        stage_started_at = now
+
+    logger.info("company-dashboard started url=%s", payload.url)
     result = run_required_three_company_selection(payload)
     selected_companies = result["selection"]["companies"]
+    log_stage("company_selection")
 
     daily_market_data = fetch_market_data_for_companies(
         companies=selected_companies,
         period=payload.daily_plot_period,
         interval=payload.daily_plot_interval,
     )
+    log_stage("daily_market_data")
     intraday_market_data = fetch_market_data_for_companies(
         companies=selected_companies,
         period=payload.intraday_plot_period,
         interval=payload.intraday_plot_interval,
     )
+    log_stage("intraday_market_data")
     plot_results = generate_report_price_plots(
         daily_companies=daily_market_data,
         intraday_companies=intraday_market_data,
@@ -1140,11 +1159,13 @@ def build_chart_research_response(
         intraday_recent_points=payload.intraday_recent_points,
         clear_output_dir=False,
     )
+    log_stage("price_plots")
     technical_companies = analyze_market_data_companies(
         daily_market_data,
         recent_rows=payload.recent_rows,
     )
     opinions = derive_company_opinions(technical_companies)
+    log_stage("technical_opinions")
     try:
         technical_analysis_by_ticker = generate_institutional_technical_analyses(
             technical_companies=technical_companies,
@@ -1156,8 +1177,10 @@ def build_chart_research_response(
     except (LLMConfigurationError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
         technical_analysis_by_ticker = {}
         technical_analysis_error = str(exc)
+    log_stage("technical_llm_analysis")
 
     fundamentals_companies = analyze_market_data_fundamentals(daily_market_data)
+    log_stage("fundamentals")
     try:
         financial_analysis_by_ticker = generate_institutional_financial_analyses(
             selected_companies=selected_companies,
@@ -1169,6 +1192,7 @@ def build_chart_research_response(
     except (LLMConfigurationError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
         financial_analysis_by_ticker = {}
         financial_analysis_error = str(exc)
+    log_stage("financial_llm_analysis")
 
     companies_with_charts = add_chart_urls_to_companies(
         companies=build_frontend_company_payload(selected_companies),
@@ -1184,6 +1208,12 @@ def build_chart_research_response(
         fundamentals_companies=fundamentals_companies,
         financial_analysis_by_ticker=financial_analysis_by_ticker,
         technical_analysis_by_ticker=technical_analysis_by_ticker,
+    )
+    log_stage("response_payload")
+    logger.info(
+        "company-dashboard completed companies=%d total=%.2fs",
+        len(companies),
+        time.perf_counter() - request_started_at,
     )
 
     return {
