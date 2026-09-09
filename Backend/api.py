@@ -1396,6 +1396,21 @@ def build_single_company_dashboard_response(
         technical_analysis_error = str(exc)
     log_stage("technical_llm_analysis")
 
+    fundamentals_companies = analyze_market_data_fundamentals(daily_market_data)
+    log_stage("fundamentals")
+    try:
+        financial_analysis_by_ticker = generate_institutional_financial_analyses(
+            selected_companies=selected_companies,
+            fundamentals_companies=fundamentals_companies,
+            provider=payload.provider,
+            model=payload.model,
+        )
+        financial_analysis_error = None
+    except (LLMConfigurationError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+        financial_analysis_by_ticker = {}
+        financial_analysis_error = str(exc)
+    log_stage("financial_llm_analysis")
+
     companies_with_charts = add_chart_urls_to_companies(
         companies=build_frontend_company_payload(selected_companies),
         plot_results=plot_results,
@@ -1407,8 +1422,8 @@ def build_single_company_dashboard_response(
         daily_market_data=daily_market_data,
         technical_companies=technical_companies,
         opinions=opinions,
-        fundamentals_companies=[],
-        financial_analysis_by_ticker={},
+        fundamentals_companies=fundamentals_companies,
+        financial_analysis_by_ticker=financial_analysis_by_ticker,
         technical_analysis_by_ticker=technical_analysis_by_ticker,
     )
     log_stage("response_payload")
@@ -1426,7 +1441,7 @@ def build_single_company_dashboard_response(
             "analysis_payload": "single_company",
             "chart_images": "url",
             "realtime_price_ready": True,
-            "fundamentals_deferred": True,
+            "fundamentals_deferred": False,
         },
         "charts": {
             "daily_plot_period": payload.daily_plot_period,
@@ -1444,6 +1459,11 @@ def build_single_company_dashboard_response(
         "opinions": {
             "method": "regime_aware_technical_score_engine_v3",
             "companies": opinions,
+        },
+        "fundamentals": {
+            "source": "OpenDART",
+            "llm_analysis_error": financial_analysis_error,
+            "companies": fundamentals_companies,
         },
     }
 
