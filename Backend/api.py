@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -54,6 +55,7 @@ from cam_pipeline.financial_calendar import (
 FRAMER_ORIGIN = "https://ambiguous-replacement-035632.framer.app"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 PLOTS_DIR = STATIC_DIR / "plots"
+logger = logging.getLogger(__name__)
 
 
 class NewResearchRequest(BaseModel):
@@ -1222,6 +1224,29 @@ def build_chart_research_response(
     }
 
 
+def handle_chart_research_request(
+    payload: ChartResearchRequest,
+    http_request: Request,
+) -> dict:
+    try:
+        return build_chart_research_response(payload, http_request)
+    except LLMConfigurationError as exc:
+        logger.exception("LLM configuration error while building company dashboard")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except requests.RequestException as exc:
+        logger.exception("External request failed while building company dashboard")
+        raise HTTPException(
+            status_code=502,
+            detail="외부 데이터 요청 중 오류가 발생했습니다.",
+        ) from exc
+    except Exception as exc:
+        logger.exception("Unexpected error while building company dashboard")
+        raise HTTPException(
+            status_code=500,
+            detail=f"company-dashboard 처리 중 오류가 발생했습니다: {exc}",
+        ) from exc
+
+
 @app.post("/api/new-research")
 def create_new_research(request: NewResearchRequest) -> dict:
     result = run_required_three_company_selection(request)
@@ -1245,7 +1270,7 @@ def create_new_research_with_charts(
     payload: ChartResearchRequest,
     http_request: Request,
 ) -> dict:
-    return build_chart_research_response(payload, http_request)
+    return handle_chart_research_request(payload, http_request)
 
 
 @app.post("/api/company-dashboard")
@@ -1253,7 +1278,7 @@ def get_company_dashboard(
     payload: ChartResearchRequest,
     http_request: Request,
 ) -> dict:
-    return build_chart_research_response(payload, http_request)
+    return handle_chart_research_request(payload, http_request)
 
 
 @app.post("/api/recommended-companies")
@@ -1273,7 +1298,7 @@ def get_recommended_companies_with_charts(
     payload: ChartResearchRequest,
     http_request: Request,
 ) -> dict:
-    result = build_chart_research_response(payload, http_request)
+    result = handle_chart_research_request(payload, http_request)
     return {
         "status": result["status"],
         "summary": result["summary"],

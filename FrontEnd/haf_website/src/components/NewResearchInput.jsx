@@ -36,7 +36,16 @@ function NewResearchInput() {
       );
 
       if (!response.ok) {
-        throw new Error('서버 응답 에러');
+        let message = '서버 응답 에러';
+
+        try {
+          const errorBody = await response.json();
+          message = errorBody.detail || message;
+        } catch {
+          message = `${message} (${response.status})`;
+        }
+
+        throw new Error(message);
       }
 
       const result = await response.json();
@@ -49,7 +58,7 @@ function NewResearchInput() {
       console.error('API 호출 실패:', error);
 
       alert(
-        '데이터를 가져오는 중 오류가 발생했습니다. 백엔드 서버 상태를 확인해 주세요.'
+        `데이터를 가져오는 중 오류가 발생했습니다.\n${error.message}`
       );
 
       setLoading(false);
