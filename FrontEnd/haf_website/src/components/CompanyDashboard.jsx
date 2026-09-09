@@ -1,4 +1,5 @@
 import React from 'react';
+import { API_HEADERS, apiUrl } from '../config/api';
 
 export function CompanyDashboard() {
   const [dashboardData, setDashboardData] = React.useState(null);
@@ -8,15 +9,85 @@ export function CompanyDashboard() {
 
   React.useEffect(() => {
     const savedData = sessionStorage.getItem('selectedCompany');
+    const savedContext = sessionStorage.getItem('selectedResearchContext');
 
     if (savedData) {
+      let companySeed = null;
+      let researchContext = {};
+
       try {
-        setDashboardData(JSON.parse(savedData));
-        setLoading(false);
-        return;
+        companySeed = JSON.parse(savedData);
       } catch (error) {
         console.error('데이터 파싱 에러:', error);
+        setLoading(false);
+        return;
       }
+
+      try {
+        researchContext = savedContext ? JSON.parse(savedContext) : {};
+      } catch (error) {
+        console.error('분석 컨텍스트 파싱 에러:', error);
+      }
+
+      const controller = new AbortController();
+
+      const loadDashboard = async () => {
+        setDashboardData(companySeed);
+
+        try {
+          const response = await fetch(apiUrl('/api/company-dashboard'), {
+            method: 'POST',
+            headers: {
+              ...API_HEADERS,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              company: companySeed,
+              provider: researchContext.provider || 'openai',
+              model: researchContext.model || undefined,
+            }),
+            signal: controller.signal,
+          });
+
+          if (!response.ok) {
+            let message = '기업 상세 분석 응답 에러';
+
+            try {
+              const errorBody = await response.json();
+              message = errorBody.detail || message;
+            } catch {
+              message = `${message} (${response.status})`;
+            }
+
+            throw new Error(message);
+          }
+
+          const result = await response.json();
+          const detailedCompany = result.company || result.companies?.[0] || {};
+          const mergedCompany = {
+            ...companySeed,
+            ...detailedCompany,
+          };
+
+          sessionStorage.setItem('selectedCompany', JSON.stringify(mergedCompany));
+          setDashboardData(mergedCompany);
+        } catch (error) {
+          if (error.name !== 'AbortError') {
+            console.error('기업 상세 분석 호출 실패:', error);
+            setDashboardData({
+              ...companySeed,
+              analysis_error:
+                error.message || '기업 상세 분석 데이터를 불러오지 못했습니다.',
+            });
+          }
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      loadDashboard();
+
+      return () => controller.abort();
     }
 
     setLoading(false);

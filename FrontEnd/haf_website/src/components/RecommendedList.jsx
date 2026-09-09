@@ -49,6 +49,15 @@ function RecommendedList() {
         'selectedCompany',
         JSON.stringify(detailCompanyData)
       );
+      sessionStorage.setItem(
+        'selectedResearchContext',
+        JSON.stringify({
+          provider: researchData.provider,
+          model: researchData.model,
+          article: researchData.article,
+          selection: researchData.selection,
+        })
+      );
 
       window.location.href =
         '/equity_research/news_research/new_research_result_detail';

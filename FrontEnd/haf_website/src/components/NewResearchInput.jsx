@@ -24,7 +24,7 @@ function NewResearchInput() {
 
     try {
       const response = await fetch(
-        apiUrl('/api/company-dashboard'),
+        apiUrl('/api/new-research'),
         {
           method: 'POST',
           headers: {

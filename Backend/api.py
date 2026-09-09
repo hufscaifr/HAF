@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, ValidationError
 
 from cam_pipeline.company_selector import (
     DEFAULT_ARTICLE_CHAR_LIMIT,
@@ -68,6 +68,19 @@ class NewResearchRequest(BaseModel):
 
 
 class ChartResearchRequest(NewResearchRequest):
+    daily_plot_period: str = DEFAULT_DAILY_PLOT_PERIOD
+    daily_plot_interval: str = DEFAULT_DAILY_PLOT_INTERVAL
+    daily_recent_points: int = Field(default=DEFAULT_DAILY_RECENT_POINTS, ge=5, le=500)
+    intraday_plot_period: str = DEFAULT_PLOT_PERIOD
+    intraday_plot_interval: str = DEFAULT_PLOT_INTERVAL
+    intraday_recent_points: int = Field(default=DEFAULT_RECENT_POINTS, ge=5, le=500)
+    recent_rows: int = Field(default=DEFAULT_RECENT_ROWS, ge=1, le=30)
+
+
+class CompanyDashboardRequest(BaseModel):
+    company: dict[str, Any]
+    provider: Literal["openai", "gemini"] = DEFAULT_PROVIDER
+    model: Optional[str] = None
     daily_plot_period: str = DEFAULT_DAILY_PLOT_PERIOD
     daily_plot_interval: str = DEFAULT_DAILY_PLOT_INTERVAL
     daily_recent_points: int = Field(default=DEFAULT_DAILY_RECENT_POINTS, ge=5, le=500)
@@ -252,6 +265,47 @@ def build_frontend_company_payload(companies: list[dict]) -> list[dict]:
         )
 
     return frontend_companies
+
+
+def normalize_dashboard_company(company: dict[str, Any]) -> dict[str, Any]:
+    market = str(company.get("market", "")).strip().upper()
+    ticker = (
+        company.get("korean_ticker")
+        or company.get("ticker")
+        or company.get("yahoo_symbol")
+        or ""
+    )
+    korean_ticker = safe_normalize_ticker(ticker)
+    name_ko = str(
+        company.get("company_name_ko")
+        or company.get("name")
+        or ""
+    ).strip()
+    name_en = str(company.get("company_name") or "").strip()
+    score = company.get("score")
+    if score is None and company.get("score_percent") is not None:
+        try:
+            score = float(company["score_percent"]) / 100
+        except (TypeError, ValueError):
+            score = 0
+
+    return {
+        "company_name": name_en or name_ko,
+        "company_name_ko": name_ko or name_en,
+        "ticker": korean_ticker,
+        "market": market or "KOSPI",
+        "confidence": score or 0,
+        "rationale": (
+            company.get("recommendation_reason")
+            or company.get("ai_opinion")
+            or company.get("reason")
+            or ""
+        ),
+        "article_relevance": company.get("article_relevance") or "",
+        "key_catalysts": company.get("key_catalysts") or company.get("catalysts") or [],
+        "risks": company.get("risks") or [],
+        "risk_analysis": company.get("risk_analysis") or "",
+    }
 
 
 def build_static_file_url(http_request: Request, file_path: str | None) -> Optional[str]:
@@ -1126,7 +1180,7 @@ def build_chart_research_response(
     def log_stage(stage: str) -> None:
         nonlocal stage_started_at
         now = time.perf_counter()
-        logger.info(
+        logger.warning(
             "company-dashboard stage=%s elapsed=%.2fs total=%.2fs",
             stage,
             now - stage_started_at,
@@ -1134,7 +1188,7 @@ def build_chart_research_response(
         )
         stage_started_at = now
 
-    logger.info("company-dashboard started url=%s", payload.url)
+    logger.warning("company-dashboard started url=%s", payload.url)
     result = run_required_three_company_selection(payload)
     selected_companies = result["selection"]["companies"]
     log_stage("company_selection")
@@ -1210,7 +1264,7 @@ def build_chart_research_response(
         technical_analysis_by_ticker=technical_analysis_by_ticker,
     )
     log_stage("response_payload")
-    logger.info(
+    logger.warning(
         "company-dashboard completed companies=%d total=%.2fs",
         len(companies),
         time.perf_counter() - request_started_at,
@@ -1277,6 +1331,146 @@ def handle_chart_research_request(
         ) from exc
 
 
+def build_single_company_dashboard_response(
+    payload: CompanyDashboardRequest,
+    http_request: Request,
+) -> dict:
+    request_started_at = time.perf_counter()
+    stage_started_at = request_started_at
+
+    def log_stage(stage: str) -> None:
+        nonlocal stage_started_at
+        now = time.perf_counter()
+        logger.warning(
+            "company-dashboard-single stage=%s elapsed=%.2fs total=%.2fs",
+            stage,
+            now - stage_started_at,
+            now - request_started_at,
+        )
+        stage_started_at = now
+
+    selected_companies = [normalize_dashboard_company(payload.company)]
+    logger.warning(
+        "company-dashboard-single started ticker=%s",
+        selected_companies[0].get("ticker"),
+    )
+
+    daily_market_data = fetch_market_data_for_companies(
+        companies=selected_companies,
+        period=payload.daily_plot_period,
+        interval=payload.daily_plot_interval,
+    )
+    log_stage("daily_market_data")
+    intraday_market_data = fetch_market_data_for_companies(
+        companies=selected_companies,
+        period=payload.intraday_plot_period,
+        interval=payload.intraday_plot_interval,
+    )
+    log_stage("intraday_market_data")
+    plot_results = generate_report_price_plots(
+        daily_companies=daily_market_data,
+        intraday_companies=intraday_market_data,
+        output_dir=str(PLOTS_DIR),
+        daily_recent_points=payload.daily_recent_points,
+        intraday_recent_points=payload.intraday_recent_points,
+        clear_output_dir=False,
+    )
+    log_stage("price_plots")
+    technical_companies = analyze_market_data_companies(
+        daily_market_data,
+        recent_rows=payload.recent_rows,
+    )
+    opinions = derive_company_opinions(technical_companies)
+    log_stage("technical_opinions")
+
+    try:
+        technical_analysis_by_ticker = generate_institutional_technical_analyses(
+            technical_companies=technical_companies,
+            opinions=opinions,
+            provider=payload.provider,
+            model=payload.model,
+        )
+        technical_analysis_error = None
+    except (LLMConfigurationError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+        technical_analysis_by_ticker = {}
+        technical_analysis_error = str(exc)
+    log_stage("technical_llm_analysis")
+
+    companies_with_charts = add_chart_urls_to_companies(
+        companies=build_frontend_company_payload(selected_companies),
+        plot_results=plot_results,
+        http_request=http_request,
+    )
+    companies = add_analysis_to_companies(
+        companies=companies_with_charts,
+        selected_companies=selected_companies,
+        daily_market_data=daily_market_data,
+        technical_companies=technical_companies,
+        opinions=opinions,
+        fundamentals_companies=[],
+        financial_analysis_by_ticker={},
+        technical_analysis_by_ticker=technical_analysis_by_ticker,
+    )
+    log_stage("response_payload")
+    logger.warning(
+        "company-dashboard-single completed ticker=%s total=%.2fs",
+        selected_companies[0].get("ticker"),
+        time.perf_counter() - request_started_at,
+    )
+
+    return {
+        "status": "success",
+        "company": companies[0] if companies else {},
+        "companies": companies,
+        "data_strategy": {
+            "analysis_payload": "single_company",
+            "chart_images": "url",
+            "realtime_price_ready": True,
+            "fundamentals_deferred": True,
+        },
+        "charts": {
+            "daily_plot_period": payload.daily_plot_period,
+            "daily_plot_interval": payload.daily_plot_interval,
+            "intraday_plot_period": payload.intraday_plot_period,
+            "intraday_plot_interval": payload.intraday_plot_interval,
+            "companies": plot_results,
+        },
+        "technical_analysis": {
+            "recent_rows": payload.recent_rows,
+            "prompt_version": "institutional_sell_side_v1",
+            "llm_analysis_error": technical_analysis_error,
+            "companies": technical_companies,
+        },
+        "opinions": {
+            "method": "regime_aware_technical_score_engine_v3",
+            "companies": opinions,
+        },
+    }
+
+
+def handle_single_company_dashboard_request(
+    payload: CompanyDashboardRequest,
+    http_request: Request,
+) -> dict:
+    try:
+        return build_single_company_dashboard_response(payload, http_request)
+    except LLMConfigurationError as exc:
+        logger.exception("LLM configuration error while building single company dashboard")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except requests.RequestException as exc:
+        logger.exception("External request failed while building single company dashboard")
+        raise HTTPException(
+            status_code=502,
+            detail="외부 데이터 요청 중 오류가 발생했습니다.",
+        ) from exc
+    except Exception as exc:
+        logger.exception("Unexpected error while building single company dashboard")
+        raise HTTPException(
+            status_code=500,
+            detail=f"company-dashboard 처리 중 오류가 발생했습니다: {exc}",
+        ) from exc
+
+
 @app.post("/api/new-research")
 def create_new_research(request: NewResearchRequest) -> dict:
     result = run_required_three_company_selection(request)
@@ -1305,10 +1499,22 @@ def create_new_research_with_charts(
 
 @app.post("/api/company-dashboard")
 def get_company_dashboard(
-    payload: ChartResearchRequest,
+    payload: dict[str, Any],
     http_request: Request,
 ) -> dict:
-    return handle_chart_research_request(payload, http_request)
+    try:
+        if payload.get("company"):
+            return handle_single_company_dashboard_request(
+                CompanyDashboardRequest(**payload),
+                http_request,
+            )
+
+        return handle_chart_research_request(
+            ChartResearchRequest(**payload),
+            http_request,
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
 
 @app.post("/api/recommended-companies")
