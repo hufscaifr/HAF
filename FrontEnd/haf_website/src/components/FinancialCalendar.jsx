@@ -54,7 +54,6 @@ const weekdays = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 function FinancialCalendar() {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [toast, setToast] = useState(null);
   const [currentDate, setCurrentDate] = useState(() => new Date());
   const [selectedEvent, setSelectedEvent] = useState(null);
@@ -76,65 +75,39 @@ function FinancialCalendar() {
   }, []);
 
   const loadEventsFromApi = useCallback(
-    async (forceRefresh = false) => {
-      if (forceRefresh) setRefreshing(true);
-      else setLoading(true);
+    async () => {
+      setLoading(true);
 
       const { start, end } = getMonthRange(year, month);
 
       try {
-        let data;
+        const queryParams = new URLSearchParams({
+          start_date: start,
+          end_date: end,
+          refresh_if_stale: 'false',
+        });
 
-        if (forceRefresh) {
-          const response = await fetch(apiUrl('/api/financial-calendar/refresh'), {
-            method: 'POST',
+        const response = await fetch(
+          apiUrl(`/api/financial-calendar?${queryParams.toString()}`),
+          {
+            method: 'GET',
             headers: {
               ...API_HEADERS,
-              'Content-Type': 'application/json',
               Accept: 'application/json',
             },
-            body: JSON.stringify({
-              start_date: start,
-              end_date: end,
-            }),
-          });
-
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: 서버 응답 오류`);
           }
+        );
 
-          data = await response.json();
-        } else {
-          const queryParams = new URLSearchParams({
-            start_date: start,
-            end_date: end,
-            refresh_if_stale: 'false',
-          });
-
-          const response = await fetch(
-            apiUrl(`/api/financial-calendar?${queryParams.toString()}`),
-            {
-              method: 'GET',
-              headers: {
-                ...API_HEADERS,
-                Accept: 'application/json',
-              },
-            }
-          );
-
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: 서버 응답 오류`);
-          }
-
-          data = await response.json();
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: 서버 응답 오류`);
         }
+
+        const data = await response.json();
 
         if (data.status === 'success' && Array.isArray(data.events)) {
           setEvents(data.events);
           setToast({
-            message: forceRefresh
-              ? `AI 웹 검색으로 최신 일정 ${data.events.length}건을 갱신했습니다.`
-              : `DB에서 ${data.events.length}건의 일정을 불러왔습니다.`,
+            message: `DB에서 ${data.events.length}건의 일정을 불러왔습니다.`,
             isError: false,
           });
         } else {
@@ -151,14 +124,13 @@ function FinancialCalendar() {
         });
       } finally {
         setLoading(false);
-        setRefreshing(false);
       }
     },
     [year, month, getMonthRange]
   );
 
   useEffect(() => {
-    loadEventsFromApi(false);
+    loadEventsFromApi();
   }, [loadEventsFromApi]);
 
   useEffect(() => {
@@ -205,19 +177,11 @@ function FinancialCalendar() {
           </p>
         </div>
 
-        <div className="financial-calendar__sync">
-          {loading && (
+        {loading && (
+          <div className="financial-calendar__sync">
             <span className="financial-calendar__sync-status">동기화 중...</span>
-          )}
-          <button
-            className="financial-calendar__refresh"
-            onClick={() => loadEventsFromApi(true)}
-            disabled={refreshing || loading}
-            type="button"
-          >
-            {refreshing ? '데이터 불러오는 중...' : '최신 일정 동기화'}
-          </button>
-        </div>
+          </div>
+        )}
       </div>
 
       <div className="financial-calendar__filters">

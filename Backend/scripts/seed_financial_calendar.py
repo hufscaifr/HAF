@@ -25,14 +25,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--chunk-days",
         type=int,
-        default=15,
+        default=5,
         help="Number of calendar days to collect per OpenAI request.",
     )
     parser.add_argument(
         "--lookahead-days",
         type=int,
-        default=45,
-        help="Number of days to collect from today.",
+        default=5,
+        help="Total number of days to collect from today, including today.",
     )
     parser.add_argument(
         "--model",
@@ -50,7 +50,7 @@ def main() -> int:
         raise SystemExit("--lookahead-days must be greater than 0.")
 
     start = get_today()
-    final_end = start + timedelta(days=args.lookahead_days)
+    final_end = start + timedelta(days=args.lookahead_days - 1)
     current_start = start
     total = 0
 
