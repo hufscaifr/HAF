@@ -83,28 +83,51 @@ function FinancialCalendar() {
       const { start, end } = getMonthRange(year, month);
 
       try {
-        const queryParams = new URLSearchParams({
-          start_date: start,
-          end_date: end,
-          refresh_if_stale: forceRefresh ? 'true' : 'false',
-        });
+        let data;
 
-        const response = await fetch(
-          apiUrl(`/api/financial-calendar?${queryParams.toString()}`),
-          {
-            method: 'GET',
+        if (forceRefresh) {
+          const response = await fetch(apiUrl('/api/financial-calendar/refresh'), {
+            method: 'POST',
             headers: {
               ...API_HEADERS,
+              'Content-Type': 'application/json',
               Accept: 'application/json',
             },
+            body: JSON.stringify({
+              start_date: start,
+              end_date: end,
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: 서버 응답 오류`);
           }
-        );
 
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: 서버 응답 오류`);
+          data = await response.json();
+        } else {
+          const queryParams = new URLSearchParams({
+            start_date: start,
+            end_date: end,
+            refresh_if_stale: 'false',
+          });
+
+          const response = await fetch(
+            apiUrl(`/api/financial-calendar?${queryParams.toString()}`),
+            {
+              method: 'GET',
+              headers: {
+                ...API_HEADERS,
+                Accept: 'application/json',
+              },
+            }
+          );
+
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: 서버 응답 오류`);
+          }
+
+          data = await response.json();
         }
-
-        const data = await response.json();
 
         if (data.status === 'success' && Array.isArray(data.events)) {
           setEvents(data.events);
