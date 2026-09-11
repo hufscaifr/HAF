@@ -1,10 +1,22 @@
 import { useEffect, useState } from 'react';
 import { API_HEADERS, apiUrl } from '../config/api';
 
+const ANALYSIS_STEPS = [
+  { key: 'article', label: '뉴스 읽는 중', startsAt: 8 },
+  { key: 'market', label: '주가 데이터 가져오는 중', startsAt: 28 },
+  { key: 'analysis', label: '분석 중', startsAt: 48 },
+  { key: 'writing', label: '글 쓰는 중', startsAt: 72 },
+];
+
 function NewResearchInput() {
   const [newsUrl, setNewsUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const [analysisProgress, setAnalysisProgress] = useState({
+    progress: 0,
+    step: 'queued',
+    message: '분석 작업을 준비하는 중',
+  });
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -21,10 +33,15 @@ function NewResearchInput() {
     }
 
     setLoading(true);
+    setAnalysisProgress({
+      progress: 0,
+      step: 'queued',
+      message: '분석 작업을 준비하는 중',
+    });
 
     try {
       const response = await fetch(
-        apiUrl('/api/company-dashboard'),
+        apiUrl('/api/company-dashboard-stream'),
         {
           method: 'POST',
           headers: {
@@ -36,21 +53,74 @@ function NewResearchInput() {
       );
 
       if (!response.ok) {
-        throw new Error('서버 응답 에러');
+        const errorPayload = await response.json().catch(() => ({}));
+        if (response.status === 429 && errorPayload.retry_after_seconds) {
+          const remainingMinutes = Math.ceil(
+            errorPayload.retry_after_seconds / 60
+          );
+          throw new Error(
+            `AI 분석은 1시간에 한 번만 가능합니다. 약 ${remainingMinutes}분 후 다시 시도해 주세요.`
+          );
+        }
+        throw new Error(errorPayload.detail || '서버 응답 에러');
       }
 
-      const result = await response.json();
+      if (!response.body) {
+        throw new Error('브라우저가 스트리밍 응답을 지원하지 않습니다.');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let result = null;
+
+      const handleEvent = (event) => {
+        if (event.type === 'progress') {
+          setAnalysisProgress({
+            progress: event.progress,
+            step: event.step,
+            message: event.message,
+          });
+        } else if (event.type === 'result') {
+          result = event.data;
+          setAnalysisProgress({
+            progress: 100,
+            step: 'completed',
+            message: '분석이 완료되었습니다.',
+          });
+        } else if (event.type === 'error') {
+          throw new Error(event.detail || '분석 중 오류가 발생했습니다.');
+        }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        lines.filter(Boolean).forEach((line) => handleEvent(JSON.parse(line)));
+        if (done) break;
+      }
+
+      if (buffer.trim()) {
+        handleEvent(JSON.parse(buffer));
+      }
+
+      if (!result) {
+        throw new Error('분석 결과를 받지 못했습니다.');
+      }
 
       sessionStorage.setItem('researchData', JSON.stringify(result));
+
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
 
       window.location.href =
         '/equity_research/news_research/new_research_result';
     } catch (error) {
       console.error('API 호출 실패:', error);
 
-      alert(
-        '데이터를 가져오는 중 오류가 발생했습니다. 백엔드 서버 상태를 확인해 주세요.'
-      );
+      alert(error.message || '분석 중 오류가 발생했습니다.');
 
       setLoading(false);
     }
@@ -128,7 +198,9 @@ function NewResearchInput() {
               onClick={handleSearch}
               disabled={loading}
             >
-              {loading ? '뉴스 분석 중...' : 'AI 분석 시작하기'}
+              {loading
+                ? `뉴스 분석 중... ${analysisProgress.progress}%`
+                : 'AI 분석 시작하기'}
 
               {!loading && (
                 <span className="research-submit-arrow" aria-hidden="true">
@@ -178,21 +250,51 @@ function NewResearchInput() {
           aria-label="AI 뉴스 분석 중"
         >
           <div className="research-loading-card">
-            <div className="research-spinner" aria-hidden="true" />
+            <div className="research-progress-value" aria-hidden="true">
+              {analysisProgress.progress}%
+            </div>
 
             <div className="research-loading-eyebrow">
               HAF AI Research Engine
             </div>
 
             <h3 className="research-loading-title">
-              AI가 뉴스를 정밀 분석하고 있습니다
+              {analysisProgress.message}
             </h3>
 
-            <p className="research-loading-description">
-              뉴스의 핵심 이벤트를 추출하고 있습니다.
-              <br />
-              관련 기업과 시장 영향을 분석해 대시보드를 생성합니다.
-            </p>
+            <div
+              className="research-progress-track"
+              role="progressbar"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow={analysisProgress.progress}
+            >
+              <div
+                className="research-progress-fill"
+                style={{ width: `${analysisProgress.progress}%` }}
+              />
+            </div>
+
+            <div className="research-progress-steps">
+              {ANALYSIS_STEPS.map((step) => {
+                const completed = analysisProgress.progress > step.startsAt;
+                const active = analysisProgress.step === step.key;
+
+                return (
+                  <div
+                    className={`research-progress-step ${
+                      completed ? 'is-complete' : ''
+                    } ${active ? 'is-active' : ''}`}
+                    key={step.key}
+                  >
+                    <span className="research-progress-step-dot">
+                      {completed ? '✓' : ''}
+                    </span>
+                    <span>{step.label}</span>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}

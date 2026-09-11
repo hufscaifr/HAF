@@ -4,6 +4,10 @@ __pycache__/
 *.pyc
 .env
 .env.local
+*.pem
+Backend/analysis_rate_limits.db
+Backend/analysis_rate_limits.db-shm
+Backend/analysis_rate_limits.db-wal
 .DS_Store
 .cache/
 ~$*

@@ -1,17 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
+import queue
+import threading
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 
 import requests
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
+from starlette.responses import StreamingResponse
 from pydantic import BaseModel, Field, HttpUrl
+
+from analysis_rate_limit import AnalysisRateLimiter
+from report_router import router as report_router
 
 from cam_pipeline.company_selector import (
     DEFAULT_ARTICLE_CHAR_LIMIT,
@@ -54,6 +62,15 @@ from cam_pipeline.financial_calendar import (
 FRAMER_ORIGIN = "https://ambiguous-replacement-035632.framer.app"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 PLOTS_DIR = STATIC_DIR / "plots"
+ANALYSIS_ENDPOINTS = {
+    "/api/new-research",
+    "/api/new-research-with-charts",
+    "/api/company-dashboard",
+    "/api/company-dashboard-stream",
+    "/api/recommended-companies",
+    "/api/recommended-companies-with-charts",
+}
+analysis_rate_limiter = AnalysisRateLimiter()
 
 
 class NewResearchRequest(BaseModel):
@@ -94,6 +111,7 @@ app = FastAPI(
     description="HTTP API for crawling a news URL and selecting meaningful Korean listed companies.",
     version="0.1.0",
 )
+app.include_router(report_router)
 PLOTS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -103,15 +121,6 @@ allowed_origins = [
     if origin.strip()
 ]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
 class PrivateNetworkAccessMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         response = await call_next(request)
@@ -120,6 +129,35 @@ class PrivateNetworkAccessMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(PrivateNetworkAccessMiddleware)
+
+
+class AnalysisRateLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.method == "POST" and request.url.path in ANALYSIS_ENDPOINTS:
+            client_id = request.client.host if request.client else "unknown"
+            allowed, retry_after = analysis_rate_limiter.acquire(client_id)
+            if not allowed:
+                return JSONResponse(
+                    status_code=429,
+                    headers={"Retry-After": str(retry_after)},
+                    content={
+                        "detail": "AI 분석은 사용자당 1시간에 한 번만 요청할 수 있습니다.",
+                        "retry_after_seconds": retry_after,
+                    },
+                )
+
+        return await call_next(request)
+
+
+app.add_middleware(AnalysisRateLimitMiddleware)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")
@@ -1116,10 +1154,17 @@ def add_analysis_to_companies(
 def build_chart_research_response(
     payload: ChartResearchRequest,
     http_request: Request,
+    progress_callback: Optional[Callable[[int, str, str], None]] = None,
 ) -> dict:
+    def report_progress(progress: int, step: str, message: str) -> None:
+        if progress_callback:
+            progress_callback(progress, step, message)
+
+    report_progress(8, "article", "뉴스를 읽고 핵심 내용을 추출하는 중")
     result = run_required_three_company_selection(payload)
     selected_companies = result["selection"]["companies"]
 
+    report_progress(28, "market", "관련 기업의 주가 데이터를 가져오는 중")
     daily_market_data = fetch_market_data_for_companies(
         companies=selected_companies,
         period=payload.daily_plot_period,
@@ -1130,6 +1175,7 @@ def build_chart_research_response(
         period=payload.intraday_plot_period,
         interval=payload.intraday_plot_interval,
     )
+    report_progress(48, "analysis", "차트와 기술적 지표를 분석하는 중")
     plot_results = generate_report_price_plots(
         daily_companies=daily_market_data,
         intraday_companies=intraday_market_data,
@@ -1143,6 +1189,9 @@ def build_chart_research_response(
         recent_rows=payload.recent_rows,
     )
     opinions = derive_company_opinions(technical_companies)
+    fundamentals_companies = analyze_market_data_fundamentals(daily_market_data)
+
+    report_progress(72, "writing", "기술적 분석과 투자 의견을 작성하는 중")
     try:
         technical_analysis_by_ticker = generate_institutional_technical_analyses(
             technical_companies=technical_companies,
@@ -1155,7 +1204,7 @@ def build_chart_research_response(
         technical_analysis_by_ticker = {}
         technical_analysis_error = str(exc)
 
-    fundamentals_companies = analyze_market_data_fundamentals(daily_market_data)
+    report_progress(84, "writing", "재무 분석 글을 작성하는 중")
     try:
         financial_analysis_by_ticker = generate_institutional_financial_analyses(
             selected_companies=selected_companies,
@@ -1168,6 +1217,7 @@ def build_chart_research_response(
         financial_analysis_by_ticker = {}
         financial_analysis_error = str(exc)
 
+    report_progress(96, "finalizing", "분석 결과를 정리하는 중")
     companies_with_charts = add_chart_urls_to_companies(
         companies=build_frontend_company_payload(selected_companies),
         plot_results=plot_results,
@@ -1222,6 +1272,15 @@ def build_chart_research_response(
     }
 
 
+def build_progress_event(progress: int, step: str, message: str) -> dict[str, Any]:
+    return {
+        "type": "progress",
+        "progress": progress,
+        "step": step,
+        "message": message,
+    }
+
+
 @app.post("/api/new-research")
 def create_new_research(request: NewResearchRequest) -> dict:
     result = run_required_three_company_selection(request)
@@ -1254,6 +1313,53 @@ def get_company_dashboard(
     http_request: Request,
 ) -> dict:
     return build_chart_research_response(payload, http_request)
+
+
+@app.post("/api/company-dashboard-stream")
+async def stream_company_dashboard(
+    payload: ChartResearchRequest,
+    http_request: Request,
+) -> StreamingResponse:
+    events: queue.Queue[dict[str, Any] | None] = queue.Queue()
+
+    def publish_progress(progress: int, step: str, message: str) -> None:
+        events.put(build_progress_event(progress, step, message))
+
+    def run_analysis() -> None:
+        try:
+            result = build_chart_research_response(
+                payload,
+                http_request,
+                progress_callback=publish_progress,
+            )
+            events.put({"type": "result", "progress": 100, "data": result})
+        except Exception as exc:
+            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+            events.put({"type": "error", "detail": detail})
+        finally:
+            events.put(None)
+
+    threading.Thread(target=run_analysis, daemon=True).start()
+
+    async def event_stream():
+        yield json.dumps(
+            build_progress_event(3, "queued", "분석 작업을 준비하는 중"),
+            ensure_ascii=False,
+        ) + "\n"
+        while True:
+            event = await asyncio.to_thread(events.get)
+            if event is None:
+                break
+            yield json.dumps(event, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/recommended-companies")
