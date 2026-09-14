@@ -14,11 +14,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONResponse
 from starlette.responses import StreamingResponse
 from pydantic import BaseModel, Field, HttpUrl
 
-from analysis_rate_limit import AnalysisRateLimiter
 from report_router import router as report_router
 
 from cam_pipeline.company_selector import (
@@ -62,17 +60,6 @@ from cam_pipeline.financial_calendar import (
 FRAMER_ORIGIN = "https://ambiguous-replacement-035632.framer.app"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 PLOTS_DIR = STATIC_DIR / "plots"
-ANALYSIS_ENDPOINTS = {
-    "/api/new-research",
-    "/api/new-research-with-charts",
-    "/api/company-dashboard",
-    "/api/company-dashboard-stream",
-    "/api/recommended-companies",
-    "/api/recommended-companies-with-charts",
-}
-analysis_rate_limiter = AnalysisRateLimiter()
-
-
 class NewResearchRequest(BaseModel):
     url: HttpUrl = Field(..., description="News article URL to crawl and analyze.")
     provider: Literal["openai", "gemini"] = DEFAULT_PROVIDER
@@ -130,26 +117,6 @@ class PrivateNetworkAccessMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(PrivateNetworkAccessMiddleware)
 
-
-class AnalysisRateLimitMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        if request.method == "POST" and request.url.path in ANALYSIS_ENDPOINTS:
-            client_id = request.client.host if request.client else "unknown"
-            allowed, retry_after = analysis_rate_limiter.acquire(client_id)
-            if not allowed:
-                return JSONResponse(
-                    status_code=429,
-                    headers={"Retry-After": str(retry_after)},
-                    content={
-                        "detail": "AI 분석은 사용자당 1시간에 한 번만 요청할 수 있습니다.",
-                        "retry_after_seconds": retry_after,
-                    },
-                )
-
-        return await call_next(request)
-
-
-app.add_middleware(AnalysisRateLimitMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

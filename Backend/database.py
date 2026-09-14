@@ -2,12 +2,22 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
+from pathlib import Path
 from typing import Generator
 
 from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover
+    load_dotenv = None
+
+
+if load_dotenv is not None:
+    load_dotenv(Path(__file__).resolve().parent / ".env")
 
 
 class Base(DeclarativeBase):

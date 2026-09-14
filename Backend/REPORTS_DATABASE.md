@@ -22,7 +22,7 @@ docker compose up -d postgres
 Add these values to `Backend/.env`:
 
 ```env
-DATABASE_URL="postgresql+psycopg://haf:haf-local-only@localhost:5432/haf"
+DATABASE_URL="postgresql+psycopg://haf:haf-local-only@localhost:5433/haf"
 REPORTS_ADMIN_TOKEN="replace-with-a-long-random-token"
 ```
 
