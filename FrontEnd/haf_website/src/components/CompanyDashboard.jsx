@@ -64,13 +64,74 @@ export function CompanyDashboard() {
 
           const result = await response.json();
           const detailedCompany = result.company || result.companies?.[0] || {};
-          const mergedCompany = {
-            ...companySeed,
-            ...detailedCompany,
-          };
+          if (!hasUsefulObjectData(detailedCompany)) {
+            throw new Error('기업 상세 분석 응답이 비어 있습니다.');
+          }
+
+          const mergedCompany = mergeUsefulCompanyData(
+            companySeed,
+            detailedCompany
+          );
 
           sessionStorage.setItem('selectedCompany', JSON.stringify(mergedCompany));
           setDashboardData(mergedCompany);
+          setLoading(false);
+
+          fetch(apiUrl('/api/company-financials'), {
+            method: 'POST',
+            headers: {
+              ...API_HEADERS,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              company: mergedCompany,
+              provider: researchContext.provider || 'openai',
+              model: researchContext.model || undefined,
+            }),
+            signal: controller.signal,
+          })
+            .then(async (financialResponse) => {
+              if (!financialResponse.ok) {
+                let message = '재무 분석 응답 에러';
+
+                try {
+                  const errorBody = await financialResponse.json();
+                  message = errorBody.detail || message;
+                } catch {
+                  message = `${message} (${financialResponse.status})`;
+                }
+
+                throw new Error(message);
+              }
+
+              return financialResponse.json();
+            })
+            .then((financialResult) => {
+              const financialCompany =
+                financialResult.company || financialResult.companies?.[0] || {};
+              if (!hasUsefulObjectData(financialCompany)) {
+                throw new Error('재무 분석 응답이 비어 있습니다.');
+              }
+
+              setDashboardData((currentData) => {
+                const nextData = mergeUsefulCompanyData(
+                  currentData || mergedCompany,
+                  financialCompany
+                );
+                sessionStorage.setItem('selectedCompany', JSON.stringify(nextData));
+                return nextData;
+              });
+            })
+            .catch((error) => {
+              if (error.name !== 'AbortError') {
+                console.error('기업 재무 분석 호출 실패:', error);
+                setDashboardData((currentData) => ({
+                  ...(currentData || mergedCompany),
+                  financial_error:
+                    error.message || '재무 분석 데이터를 불러오지 못했습니다.',
+                }));
+              }
+            });
         } catch (error) {
           if (error.name !== 'AbortError') {
             console.error('기업 상세 분석 호출 실패:', error);
@@ -80,7 +141,6 @@ export function CompanyDashboard() {
                 error.message || '기업 상세 분석 데이터를 불러오지 못했습니다.',
             });
           }
-        } finally {
           setLoading(false);
         }
       };
@@ -434,6 +494,44 @@ export function CompanyDashboard() {
       </div>
     </main>
   );
+}
+
+function hasUsefulObjectData(value) {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  return Object.values(value).some((item) => {
+    if (Array.isArray(item)) return item.length > 0;
+    if (item && typeof item === 'object') return Object.keys(item).length > 0;
+    return item !== null && item !== undefined && item !== '';
+  });
+}
+
+function mergeUsefulCompanyData(base, next) {
+  const merged = { ...(base || {}) };
+
+  Object.entries(next || {}).forEach(([key, value]) => {
+    if (!isUsefulValue(value)) {
+      return;
+    }
+
+    merged[key] = value;
+  });
+
+  return merged;
+}
+
+function isUsefulValue(value) {
+  if (Array.isArray(value)) {
+    return value.length > 0;
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.values(value).some(isUsefulValue);
+  }
+
+  return value !== null && value !== undefined && value !== '';
 }
 
 function parseMarkdownSections(text) {
