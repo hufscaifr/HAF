@@ -23,6 +23,13 @@ export function CompanyDashboard() {
         return;
       }
 
+      if (!isPlainObject(companySeed) || !hasUsefulObjectData(companySeed)) {
+        console.error('선택된 기업 데이터가 비어 있습니다:', companySeed);
+        sessionStorage.removeItem('selectedCompany');
+        setLoading(false);
+        return;
+      }
+
       try {
         researchContext = savedContext ? JSON.parse(savedContext) : {};
       } catch (error) {
@@ -54,7 +61,7 @@ export function CompanyDashboard() {
 
             try {
               const errorBody = await response.json();
-              message = errorBody.detail || message;
+              message = formatApiErrorDetail(errorBody.detail) || message;
             } catch {
               message = `${message} (${response.status})`;
             }
@@ -96,7 +103,7 @@ export function CompanyDashboard() {
 
                 try {
                   const errorBody = await financialResponse.json();
-                  message = errorBody.detail || message;
+                  message = formatApiErrorDetail(errorBody.detail) || message;
                 } catch {
                   message = `${message} (${financialResponse.status})`;
                 }
@@ -497,7 +504,7 @@ export function CompanyDashboard() {
 }
 
 function hasUsefulObjectData(value) {
-  if (!value || typeof value !== 'object') {
+  if (!isPlainObject(value)) {
     return false;
   }
 
@@ -506,6 +513,10 @@ function hasUsefulObjectData(value) {
     if (item && typeof item === 'object') return Object.keys(item).length > 0;
     return item !== null && item !== undefined && item !== '';
   });
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function mergeUsefulCompanyData(base, next) {
@@ -532,6 +543,36 @@ function isUsefulValue(value) {
   }
 
   return value !== null && value !== undefined && value !== '';
+}
+
+function formatApiErrorDetail(detail) {
+  if (!detail) {
+    return '';
+  }
+
+  if (typeof detail === 'string') {
+    return detail;
+  }
+
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (!item || typeof item !== 'object') {
+          return String(item);
+        }
+
+        const location = Array.isArray(item.loc) ? item.loc.join('.') : item.loc;
+        return [location, item.msg].filter(Boolean).join(': ');
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  try {
+    return JSON.stringify(detail);
+  } catch {
+    return String(detail);
+  }
 }
 
 function parseMarkdownSections(text) {

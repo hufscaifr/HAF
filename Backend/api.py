@@ -427,6 +427,14 @@ def ticker_lookup_key(value: Any) -> str:
     return safe_normalize_ticker(value)
 
 
+def has_useful_payload_value(value: Any) -> bool:
+    if isinstance(value, list):
+        return any(has_useful_payload_value(item) for item in value)
+    if isinstance(value, dict):
+        return any(has_useful_payload_value(item) for item in value.values())
+    return value is not None and value != ""
+
+
 def map_by_ticker(items: list[dict]) -> dict[str, dict]:
     mapped: dict[str, dict] = {}
     for item in items:
@@ -1681,7 +1689,12 @@ def get_company_dashboard(
     http_request: Request,
 ) -> dict:
     try:
-        if payload.get("company"):
+        if "company" in payload:
+            if not has_useful_payload_value(payload.get("company")):
+                raise HTTPException(
+                    status_code=422,
+                    detail="company payload is empty.",
+                )
             return handle_single_company_dashboard_request(
                 CompanyDashboardRequest(**payload),
                 http_request,
