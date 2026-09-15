@@ -51,6 +51,12 @@ from cam_pipeline.financial_calendar import (
     parse_iso_date,
     refresh_financial_calendar,
 )
+from cam_pipeline.krx_listings import (
+    KrxListingsError,
+    list_krx_listings,
+    lookup_krx_listing,
+    refresh_krx_listings,
+)
 
 
 FRAMER_ORIGIN = "https://ambiguous-replacement-035632.framer.app"
@@ -90,6 +96,14 @@ class CompanyDashboardRequest(BaseModel):
     recent_rows: int = Field(default=DEFAULT_RECENT_ROWS, ge=1, le=30)
 
 
+class CompanyFinancialsRequest(BaseModel):
+    company: dict[str, Any]
+    provider: Literal["openai", "gemini"] = DEFAULT_PROVIDER
+    model: Optional[str] = None
+    daily_plot_period: str = DEFAULT_DAILY_PLOT_PERIOD
+    daily_plot_interval: str = DEFAULT_DAILY_PLOT_INTERVAL
+
+
 class FinancialCalendarRefreshRequest(BaseModel):
     start_date: Optional[str] = Field(
         default=None,
@@ -102,6 +116,17 @@ class FinancialCalendarRefreshRequest(BaseModel):
     model: Optional[str] = Field(
         default=None,
         description="OpenAI model used for calendar collection.",
+    )
+
+
+class KrxListingsRefreshRequest(BaseModel):
+    bas_dd: Optional[str] = Field(
+        default=None,
+        description="KRX base date in YYYYMMDD format. Defaults to the latest data supported by the KRX API.",
+    )
+    markets: list[Literal["KOSPI", "KOSDAQ"]] = Field(
+        default_factory=lambda: ["KOSPI", "KOSDAQ"],
+        description="KRX markets to synchronize.",
     )
 
 
@@ -243,11 +268,16 @@ def build_frontend_company_payload(companies: list[dict]) -> list[dict]:
         score = round(float(company.get("confidence", 0) or 0), 3)
         market = str(company.get("market", "")).strip()
         korean_ticker = safe_normalize_ticker(company.get("ticker", ""))
+        krx_listing = lookup_krx_listing(korean_ticker)
+        if krx_listing:
+            market = str(krx_listing.get("market") or market).strip()
         yahoo_ticker = safe_build_yahoo_symbol(
             ticker=korean_ticker,
             market=market,
         )
         name_ko = str(company.get("company_name_ko", "")).strip()
+        if krx_listing:
+            name_ko = str(krx_listing.get("title") or name_ko).strip()
         name_en = str(company.get("company_name", "")).strip()
 
         frontend_companies.append(
@@ -276,11 +306,16 @@ def normalize_dashboard_company(company: dict[str, Any]) -> dict[str, Any]:
         or ""
     )
     korean_ticker = safe_normalize_ticker(ticker)
+    krx_listing = lookup_krx_listing(korean_ticker)
+    if krx_listing:
+        market = str(krx_listing.get("market") or market).strip().upper()
     name_ko = str(
         company.get("company_name_ko")
         or company.get("name")
         or ""
     ).strip()
+    if krx_listing:
+        name_ko = str(krx_listing.get("title") or name_ko).strip()
     name_en = str(company.get("company_name") or "").strip()
     score = company.get("score")
     if score is None and company.get("score_percent") is not None:
@@ -388,12 +423,22 @@ def add_chart_urls_to_companies(
     return enriched_companies
 
 
+def ticker_lookup_key(value: Any) -> str:
+    return safe_normalize_ticker(value)
+
+
 def map_by_ticker(items: list[dict]) -> dict[str, dict]:
-    return {
-        str(item.get("ticker", "")).strip(): item
-        for item in items
-        if str(item.get("ticker", "")).strip()
-    }
+    mapped: dict[str, dict] = {}
+    for item in items:
+        for key in (
+            item.get("korean_ticker"),
+            item.get("ticker"),
+            item.get("yahoo_symbol"),
+        ):
+            ticker = ticker_lookup_key(key)
+            if ticker:
+                mapped[ticker] = item
+    return mapped
 
 
 def format_metric(value: object, suffix: str = "", digits: int = 2) -> Optional[str]:
@@ -1110,7 +1155,11 @@ def add_analysis_to_companies(
     enriched_companies: list[dict] = []
 
     for company in companies:
-        ticker = str(company.get("korean_ticker", "")).strip()
+        ticker = ticker_lookup_key(
+            company.get("korean_ticker")
+            or company.get("ticker")
+            or company.get("yahoo_symbol")
+        )
         selected = selected_by_ticker.get(ticker, {})
         market = market_by_ticker.get(ticker, {})
         technical = technical_by_ticker.get(ticker, {})
@@ -1396,21 +1445,6 @@ def build_single_company_dashboard_response(
         technical_analysis_error = str(exc)
     log_stage("technical_llm_analysis")
 
-    fundamentals_companies = analyze_market_data_fundamentals(daily_market_data)
-    log_stage("fundamentals")
-    try:
-        financial_analysis_by_ticker = generate_institutional_financial_analyses(
-            selected_companies=selected_companies,
-            fundamentals_companies=fundamentals_companies,
-            provider=payload.provider,
-            model=payload.model,
-        )
-        financial_analysis_error = None
-    except (LLMConfigurationError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
-        financial_analysis_by_ticker = {}
-        financial_analysis_error = str(exc)
-    log_stage("financial_llm_analysis")
-
     companies_with_charts = add_chart_urls_to_companies(
         companies=build_frontend_company_payload(selected_companies),
         plot_results=plot_results,
@@ -1422,8 +1456,8 @@ def build_single_company_dashboard_response(
         daily_market_data=daily_market_data,
         technical_companies=technical_companies,
         opinions=opinions,
-        fundamentals_companies=fundamentals_companies,
-        financial_analysis_by_ticker=financial_analysis_by_ticker,
+        fundamentals_companies=[],
+        financial_analysis_by_ticker={},
         technical_analysis_by_ticker=technical_analysis_by_ticker,
     )
     log_stage("response_payload")
@@ -1441,7 +1475,7 @@ def build_single_company_dashboard_response(
             "analysis_payload": "single_company",
             "chart_images": "url",
             "realtime_price_ready": True,
-            "fundamentals_deferred": False,
+            "fundamentals_deferred": True,
         },
         "charts": {
             "daily_plot_period": payload.daily_plot_period,
@@ -1459,11 +1493,6 @@ def build_single_company_dashboard_response(
         "opinions": {
             "method": "regime_aware_technical_score_engine_v3",
             "companies": opinions,
-        },
-        "fundamentals": {
-            "source": "OpenDART",
-            "llm_analysis_error": financial_analysis_error,
-            "companies": fundamentals_companies,
         },
     }
 
@@ -1488,6 +1517,135 @@ def handle_single_company_dashboard_request(
         raise HTTPException(
             status_code=500,
             detail=f"company-dashboard 처리 중 오류가 발생했습니다: {exc}",
+        ) from exc
+
+
+def build_single_company_financials_response(payload: CompanyFinancialsRequest) -> dict:
+    request_started_at = time.perf_counter()
+    stage_started_at = request_started_at
+
+    def log_stage(stage: str) -> None:
+        nonlocal stage_started_at
+        now = time.perf_counter()
+        logger.warning(
+            "company-financials stage=%s elapsed=%.2fs total=%.2fs",
+            stage,
+            now - stage_started_at,
+            now - request_started_at,
+        )
+        stage_started_at = now
+
+    selected_companies = [normalize_dashboard_company(payload.company)]
+    logger.warning(
+        "company-financials started ticker=%s",
+        selected_companies[0].get("ticker"),
+    )
+
+    daily_market_data = fetch_market_data_for_companies(
+        companies=selected_companies,
+        period=payload.daily_plot_period,
+        interval=payload.daily_plot_interval,
+    )
+    log_stage("daily_market_data")
+
+    fundamentals_companies = analyze_market_data_fundamentals(daily_market_data)
+    log_stage("fundamentals")
+
+    try:
+        financial_analysis_by_ticker = generate_institutional_financial_analyses(
+            selected_companies=selected_companies,
+            fundamentals_companies=fundamentals_companies,
+            provider=payload.provider,
+            model=payload.model,
+        )
+        financial_analysis_error = None
+    except (LLMConfigurationError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+        financial_analysis_by_ticker = {}
+        financial_analysis_error = str(exc)
+    log_stage("financial_llm_analysis")
+
+    companies = add_analysis_to_companies(
+        companies=build_frontend_company_payload(selected_companies),
+        selected_companies=selected_companies,
+        daily_market_data=daily_market_data,
+        technical_companies=[],
+        opinions=[],
+        fundamentals_companies=fundamentals_companies,
+        financial_analysis_by_ticker=financial_analysis_by_ticker,
+        technical_analysis_by_ticker={},
+    )
+    log_stage("response_payload")
+    logger.warning(
+        "company-financials completed ticker=%s total=%.2fs",
+        selected_companies[0].get("ticker"),
+        time.perf_counter() - request_started_at,
+    )
+
+    return {
+        "status": "success",
+        "company": companies[0] if companies else {},
+        "companies": companies,
+        "fundamentals": {
+            "source": "OpenDART",
+            "llm_analysis_error": financial_analysis_error,
+            "companies": fundamentals_companies,
+        },
+    }
+
+
+def handle_single_company_financials_request(payload: CompanyFinancialsRequest) -> dict:
+    try:
+        return build_single_company_financials_response(payload)
+    except LLMConfigurationError as exc:
+        logger.exception("LLM configuration error while building single company financials")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except requests.RequestException as exc:
+        logger.exception("External request failed while building single company financials")
+        raise HTTPException(
+            status_code=502,
+            detail="외부 재무 데이터 요청 중 오류가 발생했습니다.",
+        ) from exc
+    except Exception as exc:
+        logger.exception("Unexpected error while building single company financials")
+        raise HTTPException(
+            status_code=500,
+            detail=f"company-financials 처리 중 오류가 발생했습니다: {exc}",
+        ) from exc
+
+
+@app.get("/api/krx-listings")
+def get_krx_listings(market: Optional[str] = None, limit: int = 50) -> dict:
+    try:
+        listings = list_krx_listings(market=market, limit=limit)
+    except Exception as exc:
+        logger.exception("Failed to read KRX listings")
+        raise HTTPException(
+            status_code=500,
+            detail=f"KRX 종목 DB 조회 중 오류가 발생했습니다: {exc}",
+        ) from exc
+
+    return {
+        "status": "success",
+        "count": len(listings),
+        "listings": listings,
+    }
+
+
+@app.post("/api/krx-listings/refresh")
+def refresh_krx_listings_api(payload: KrxListingsRefreshRequest) -> dict:
+    try:
+        return refresh_krx_listings(
+            bas_dd=payload.bas_dd,
+            markets=tuple(payload.markets),
+        )
+    except KrxListingsError as exc:
+        logger.exception("KRX listings refresh failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except requests.RequestException as exc:
+        logger.exception("KRX API request failed")
+        raise HTTPException(
+            status_code=502,
+            detail=f"KRX API 요청 중 오류가 발생했습니다: {exc}",
         ) from exc
 
 
@@ -1535,6 +1693,11 @@ def get_company_dashboard(
         )
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+
+@app.post("/api/company-financials")
+def get_company_financials(payload: CompanyFinancialsRequest) -> dict:
+    return handle_single_company_financials_request(payload)
 
 
 @app.post("/api/recommended-companies")

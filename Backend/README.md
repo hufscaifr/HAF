@@ -44,15 +44,6 @@ python3 main.py opinion "https://example.com/news-article" --provider gemini --j
 
 python3 main.py plot "https://example.com/news-article" --provider openai --recent-points 60 --clear-output-dir
 python3 main.py plot "https://example.com/news-article" --provider gemini --output-dir plots --json
-
-python3 main.py report "https://example.com/news-article" --provider openai --recent-points 60 --output-dir plots --clear-output-dir
-python3 main.py report "https://example.com/news-article" --provider gemini --json
-
-python3 main.py research "https://example.com/news-article" --provider openai --period 6mo --interval 1d
-python3 main.py research "https://example.com/news-article" --provider gemini --json
-
-python3 main.py word-report "https://example.com/news-article" --provider openai --output-dir word_reports --recent-points 60
-python3 main.py word-report "https://example.com/news-article" --provider gemini --json
 ```
 
 ## Backend API for Framer
@@ -455,60 +446,3 @@ Implementation note:
 - Step 6 uses `matplotlib` to save PNG charts of recent price and volume movement for each selected company.
 - The chart default is `--period 1d --interval 1m`; use those options if you want a different Yahoo Finance range.
 - Use `--clear-output-dir` if you want old PNG files in the target plot folder removed before each new run.
-
-## Combined Run
-
-The `report` command runs the opinion engine and report chart generation together in one command:
-- Scrape the article
-- Select KOSPI/KOSDAQ companies with an LLM
-- Fetch Yahoo Finance OHLCV data for analysis
-- Fetch DART financial indicators
-- Calculate technical indicators
-- Derive buy/sell opinions
-- Save two report charts per company: a 3-month daily price chart and a 1-minute intraday price/volume chart
-
-Implementation note:
-- `report` keeps the analysis fetch separate from chart fetching, so daily indicators can remain stable while chart images use `--daily-plot-period 3mo --daily-plot-interval 1d` and `--plot-period 1d --plot-interval 1m` by default.
-- `report --clear-output-dir` clears existing PNG charts in the target output folder before saving the new report charts.
-
-## LLM Research Report
-
-The `research` command writes a Korean institutional-style thematic equity research report using the calculated pipeline outputs:
-- Scrape the article
-- Select KOSPI/KOSDAQ companies with an LLM
-- Fetch Yahoo Finance OHLCV data
-- Calculate DART-based financial indicators
-- Calculate technical indicators
-- Derive rule-based opinions
-- Ask the LLM to write a full Korean sell-side style report using only those inputs
-
-Research report outputs include:
-- `llm_report.prompt_version`
-- `llm_report.body`
-
-Implementation note:
-- The report prompt is designed to keep the output conservative and evidence-based.
-- Financial and technical data are passed into the model as structured inputs so the report interprets the calculated metrics instead of inventing external assumptions.
-
-## Microsoft Word Report
-
-The `word-report` command generates a `.docx` research note with charts and tables:
-- Scrape the article
-- Select KOSPI/KOSDAQ companies with an LLM
-- Fetch Yahoo Finance OHLCV data
-- Calculate DART-based financial indicators
-- Calculate technical indicators
-- Derive rule-based opinions
-- Generate the Korean LLM research report
-- Save a Microsoft Word report with:
-  - a top investment-opinion summary table
-  - stock-price plots beneath the company analysis section
-  - a financial analysis table for each company
-
-Word report outputs include:
-- `word_report.document_path`
-- `plots.output_dir`
-
-Implementation note:
-- The report is exported as a Microsoft Word `.docx` file using `python-docx`.
-- The generated document applies different font sizes for the title, section headings, and body text.
