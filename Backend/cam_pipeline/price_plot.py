@@ -32,18 +32,20 @@ DEFAULT_PLOT_PERIOD = "1d"
 DEFAULT_PLOT_INTERVAL = "1m"
 DEFAULT_RECENT_POINTS = 80
 DEFAULT_DAILY_RECENT_POINTS = 90
-CHART_BACKGROUND = "#070b13"
-CHART_PANEL = "#101827"
-CHART_GRID = "#24344f"
-CHART_BORDER = "#0b4f8d"
-CHART_TEXT = "#f4f7fb"
-CHART_MUTED_TEXT = "#98a8bf"
-CHART_LINE = "#0b63d8"
-CHART_LINE_GLOW = "#1c78ff"
-CHART_FILL = "#0b63d8"
-CHART_POSITIVE = "#28f28f"
-CHART_NEGATIVE = "#ff6370"
-CHART_REFERENCE = "#6f819b"
+CHART_BACKGROUND = "#f5f5f7"
+CHART_PANEL = "#ffffff"
+CHART_GRID = "#d8dde3"
+CHART_BORDER = "#d2d2d7"
+CHART_TEXT = "#1d1d1f"
+CHART_MUTED_TEXT = "#6e6e73"
+CHART_LINE = "#0a4d2e"
+CHART_LINE_GLOW = "#bfa054"
+CHART_FILL = "#0a4d2e"
+CHART_POSITIVE = "#0a4d2e"
+CHART_NEGATIVE = "#c84c4c"
+CHART_REFERENCE = "#bfa054"
+CHART_BADGE = "#f5f5f7"
+CHART_BADGE_BORDER = "#e5e5ea"
 
 
 class PricePlotError(RuntimeError):
@@ -255,24 +257,25 @@ def render_daily_price_plot(frame: pd.DataFrame, company: dict[str, Any], plot_p
 
     figure, axis = plt.subplots(figsize=(12.8, 5.8), facecolor=CHART_BACKGROUND)
     axis.set_facecolor(CHART_PANEL)
-    axis.grid(True, color=CHART_GRID, linewidth=0.8, alpha=0.55)
+    axis.grid(True, axis="y", color=CHART_GRID, linewidth=0.7, alpha=0.72)
+    axis.grid(False, axis="x")
     axis.spines["left"].set_visible(False)
     axis.spines["top"].set_visible(False)
     axis.spines["bottom"].set_color(CHART_BORDER)
-    axis.spines["right"].set_color(CHART_BORDER)
-    axis.tick_params(axis="both", colors=CHART_MUTED_TEXT, labelsize=10)
+    axis.spines["right"].set_visible(False)
+    axis.tick_params(axis="both", colors=CHART_MUTED_TEXT, labelsize=9, length=0, pad=8)
     axis.yaxis.tick_right()
     axis.yaxis.set_label_position("right")
 
     x_values = frame["date"]
     closes = frame["close"].astype(float)
-    axis.plot(x_values, closes, color=CHART_LINE_GLOW, linewidth=4.2, alpha=0.12, zorder=2)
-    axis.plot(x_values, closes, color=CHART_LINE, linewidth=2.4, zorder=3)
-    axis.fill_between(x_values, closes, closes.min(), color=CHART_FILL, alpha=0.22, zorder=1)
+    axis.plot(x_values, closes, color=CHART_LINE_GLOW, linewidth=5.4, alpha=0.12, zorder=2)
+    axis.plot(x_values, closes, color=CHART_LINE, linewidth=2.15, zorder=3)
+    axis.fill_between(x_values, closes, closes.min(), color=CHART_FILL, alpha=0.08, zorder=1)
 
     latest = frame.iloc[-1]
     latest_close = float(latest["close"])
-    axis.axhline(latest_close, color=CHART_REFERENCE, linestyle=(0, (3, 3)), linewidth=0.9, alpha=0.75)
+    axis.axhline(latest_close, color=CHART_REFERENCE, linestyle=(0, (3, 4)), linewidth=0.9, alpha=0.72)
     axis.annotate(
         f"{latest_close:,.2f}",
         xy=(x_values.iloc[-1], latest_close),
@@ -280,25 +283,25 @@ def render_daily_price_plot(frame: pd.DataFrame, company: dict[str, Any], plot_p
         textcoords="offset points",
         va="center",
         ha="left",
-        fontsize=11,
-        fontweight="bold",
-        color=CHART_BACKGROUND,
-        bbox={"boxstyle": "round,pad=0.35", "fc": CHART_POSITIVE, "ec": "none"},
+        fontsize=10,
+        fontweight="semibold",
+        color="#ffffff",
+        bbox={"boxstyle": "round,pad=0.32", "fc": CHART_POSITIVE, "ec": "none"},
         clip_on=False,
     )
     axis.set_title(
-        f"{display_name} ({symbol}) 3M Daily Trend",
+        f"{display_name} ({symbol}) · 3M Daily Trend",
         loc="left",
-        fontsize=15,
-        fontweight="bold",
+        fontsize=14,
+        fontweight="semibold",
         color=CHART_TEXT,
-        pad=12,
+        pad=14,
     )
-    axis.set_ylabel("Close", color=CHART_MUTED_TEXT)
+    axis.set_ylabel("")
     axis.yaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: f"{value:,.2f}"))
     axis.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
     figure.autofmt_xdate(rotation=0)
-    figure.tight_layout(pad=1.2)
+    figure.tight_layout(pad=1.45)
     figure.savefig(plot_path, dpi=160)
     plt.close(figure)
 
@@ -319,12 +322,13 @@ def render_intraday_price_plot(frame: pd.DataFrame, company: dict[str, Any], plo
 
     for axis in (price_axis, volume_axis):
         axis.set_facecolor(CHART_PANEL)
-        axis.grid(True, color=CHART_GRID, linewidth=0.8, alpha=0.55)
+        axis.grid(True, axis="y", color=CHART_GRID, linewidth=0.7, alpha=0.72)
+        axis.grid(False, axis="x")
         axis.spines["left"].set_visible(False)
         axis.spines["top"].set_visible(False)
         axis.spines["bottom"].set_color(CHART_BORDER)
-        axis.spines["right"].set_color(CHART_BORDER)
-        axis.tick_params(axis="both", colors=CHART_MUTED_TEXT, labelsize=10)
+        axis.spines["right"].set_visible(False)
+        axis.tick_params(axis="both", colors=CHART_MUTED_TEXT, labelsize=9, length=0, pad=8)
         axis.yaxis.tick_right()
         axis.yaxis.set_label_position("right")
 
@@ -333,15 +337,15 @@ def render_intraday_price_plot(frame: pd.DataFrame, company: dict[str, Any], plo
     opens = frame["open"].astype(float)
     volumes = frame["volume"].astype(float)
 
-    price_axis.plot(x_values, closes, color=CHART_LINE_GLOW, linewidth=4.0, alpha=0.12, zorder=2)
-    price_axis.plot(x_values, closes, color=CHART_LINE, linewidth=2.1, zorder=3)
-    price_axis.fill_between(x_values, closes, closes.min(), color=CHART_FILL, alpha=0.24, zorder=1)
+    price_axis.plot(x_values, closes, color=CHART_LINE_GLOW, linewidth=5.0, alpha=0.11, zorder=2)
+    price_axis.plot(x_values, closes, color=CHART_LINE, linewidth=2.0, zorder=3)
+    price_axis.fill_between(x_values, closes, closes.min(), color=CHART_FILL, alpha=0.08, zorder=1)
 
     up_color = CHART_POSITIVE
     down_color = CHART_NEGATIVE
     bar_colors = [up_color if close >= open_ else down_color for open_, close in zip(opens, closes)]
     bar_width = estimate_bar_width(x_values)
-    volume_axis.bar(x_values, volumes, width=bar_width, color=bar_colors, align="center", alpha=0.72)
+    volume_axis.bar(x_values, volumes, width=bar_width, color=bar_colors, align="center", alpha=0.44)
     volume_axis.set_ylim(0, max(float(volumes.max()) * 1.35, 1.0))
 
     latest = frame.iloc[-1]
@@ -350,7 +354,7 @@ def render_intraday_price_plot(frame: pd.DataFrame, company: dict[str, Any], plo
     low = float(frame["low"].min()) if "low" in frame.columns and frame["low"].notna().any() else float(closes.min())
     latest_close = float(latest["close"])
     latest_volume = int(float(latest["volume"]))
-    price_axis.axhline(latest_close, color=CHART_REFERENCE, linestyle=(0, (3, 3)), linewidth=0.9, alpha=0.8)
+    price_axis.axhline(latest_close, color=CHART_REFERENCE, linestyle=(0, (3, 4)), linewidth=0.9, alpha=0.72)
     price_axis.annotate(
         f"{latest_close:,.2f}",
         xy=(x_values.iloc[-1], latest_close),
@@ -358,9 +362,9 @@ def render_intraday_price_plot(frame: pd.DataFrame, company: dict[str, Any], plo
         textcoords="offset points",
         va="center",
         ha="left",
-        fontsize=11,
-        fontweight="bold",
-        color=CHART_BACKGROUND,
+        fontsize=10,
+        fontweight="semibold",
+        color="#ffffff",
         bbox={"boxstyle": "round,pad=0.35", "fc": CHART_POSITIVE, "ec": "none"},
         clip_on=False,
     )
@@ -374,39 +378,44 @@ def render_intraday_price_plot(frame: pd.DataFrame, company: dict[str, Any], plo
         0.93,
         ohlcv_label,
         transform=price_axis.transAxes,
-        fontsize=12,
+        fontsize=10,
         color=CHART_TEXT,
-        bbox={"boxstyle": "round,pad=0.3", "fc": "#151f32", "ec": "#243b63", "alpha": 0.88},
+        bbox={
+            "boxstyle": "round,pad=0.35",
+            "fc": CHART_BADGE,
+            "ec": CHART_BADGE_BORDER,
+            "alpha": 0.95,
+        },
     )
     price_axis.text(
         0.985,
         0.965,
-        "yahoo finance",
+        "market data",
         transform=price_axis.transAxes,
         ha="right",
         va="top",
-        fontsize=16,
+        fontsize=12,
         color=CHART_MUTED_TEXT,
-        fontweight="bold",
-        alpha=0.22,
+        fontweight="semibold",
+        alpha=0.3,
     )
     price_axis.set_title(
-        f"{display_name} ({symbol}) 1M Price / Volume",
+        f"{display_name} ({symbol}) · Price / Volume",
         loc="left",
-        fontsize=15,
-        fontweight="bold",
+        fontsize=14,
+        fontweight="semibold",
         color=CHART_TEXT,
-        pad=12,
+        pad=14,
     )
 
-    price_axis.set_ylabel("Price", color=CHART_MUTED_TEXT)
-    volume_axis.set_ylabel("Volume", color=CHART_MUTED_TEXT)
+    price_axis.set_ylabel("")
+    volume_axis.set_ylabel("")
     volume_axis.yaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: format_compact_number(value)))
     price_axis.yaxis.set_major_formatter(plt.FuncFormatter(lambda value, _: f"{value:,.2f}"))
     volume_axis.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
     plt.setp(price_axis.get_xticklabels(), visible=False)
     figure.autofmt_xdate(rotation=0)
-    figure.tight_layout(pad=1.2)
+    figure.tight_layout(pad=1.45)
     figure.savefig(plot_path, dpi=160)
     plt.close(figure)
 
