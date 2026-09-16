@@ -304,6 +304,20 @@ def build_frontend_company_payload(companies: list[dict]) -> list[dict]:
                 "company_name_ko": name_ko,
                 "korean_ticker": korean_ticker,
                 "market": market,
+                "recommendation_reason": str(
+                    company.get("rationale")
+                    or company.get("recommendation_reason")
+                    or company.get("reason")
+                    or ""
+                ).strip(),
+                "article_relevance": str(company.get("article_relevance", "")).strip(),
+                "ai_opinion": str(
+                    company.get("rationale")
+                    or company.get("article_relevance")
+                    or ""
+                ).strip(),
+                "key_catalysts": company.get("key_catalysts", []),
+                "risks": company.get("risks", []),
                 "risk_analysis": str(company.get("risk_analysis", "")).strip(),
             }
         )

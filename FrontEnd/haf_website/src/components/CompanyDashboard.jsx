@@ -251,6 +251,13 @@ export function CompanyDashboard() {
     fin.comment ||
     '';
 
+  const investmentOpinionText =
+    dashboardData.ai_opinion ||
+    dashboardData.technical_opinion ||
+    dashboardData.technical_analysis_text ||
+    dashboardData.ai_technical_analysis ||
+    '';
+
   const parsedSections = parseMarkdownSections(technicalReportText);
 
   const sortedHighlights = [...highlights].sort(
@@ -387,9 +394,7 @@ export function CompanyDashboard() {
               <div className="company-feature-card">
                 <div className="company-feature-label">Investment Opinion</div>
                 <p className="company-feature-text">
-                  {dashboardData.ai_opinion ||
-                    dashboardData.technical_opinion ||
-                    '의견을 준비 중입니다.'}
+                  {investmentOpinionText || '의견을 준비 중입니다.'}
                 </p>
 
                 {dashboardData.opinion_rationale && (
