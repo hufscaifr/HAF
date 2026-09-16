@@ -57,6 +57,15 @@ from cam_pipeline.krx_listings import (
     lookup_krx_listing,
     refresh_krx_listings,
 )
+from cam_pipeline.research_cache import (
+    build_company_cache_key,
+    build_research_signature,
+    get_cached_company_analysis,
+    get_cached_research,
+    get_cached_research_by_id,
+    save_company_analysis,
+    save_research,
+)
 
 
 FRAMER_ORIGIN = "https://ambiguous-replacement-035632.framer.app"
@@ -71,6 +80,7 @@ class NewResearchRequest(BaseModel):
     model: Optional[str] = None
     max_companies: int = Field(default=3, ge=1, le=10)
     article_char_limit: int = Field(default=DEFAULT_ARTICLE_CHAR_LIMIT, ge=1000, le=50000)
+    force_refresh: bool = False
 
 
 class ChartResearchRequest(NewResearchRequest):
@@ -85,6 +95,8 @@ class ChartResearchRequest(NewResearchRequest):
 
 class CompanyDashboardRequest(BaseModel):
     company: dict[str, Any]
+    research_id: Optional[str] = None
+    force_refresh: bool = False
     provider: Literal["openai", "gemini"] = DEFAULT_PROVIDER
     model: Optional[str] = None
     daily_plot_period: str = DEFAULT_DAILY_PLOT_PERIOD
@@ -98,6 +110,8 @@ class CompanyDashboardRequest(BaseModel):
 
 class CompanyFinancialsRequest(BaseModel):
     company: dict[str, Any]
+    research_id: Optional[str] = None
+    force_refresh: bool = False
     provider: Literal["openai", "gemini"] = DEFAULT_PROVIDER
     model: Optional[str] = None
     daily_plot_period: str = DEFAULT_DAILY_PLOT_PERIOD
@@ -1509,8 +1523,31 @@ def handle_single_company_dashboard_request(
     payload: CompanyDashboardRequest,
     http_request: Request,
 ) -> dict:
+    company = normalize_dashboard_company(payload.company)
+    ticker = str(company.get("ticker") or "").strip()
+    cache_key = build_company_cache_key(
+        kind="company_dashboard",
+        research_id=payload.research_id,
+        ticker=ticker,
+        provider=payload.provider,
+        model=payload.model,
+    )
+    if not payload.force_refresh:
+        cached = get_cached_company_analysis(cache_key)
+        if cached:
+            return cached
+
     try:
-        return build_single_company_dashboard_response(payload, http_request)
+        result = build_single_company_dashboard_response(payload, http_request)
+        result["research_id"] = payload.research_id
+        save_company_analysis(
+            cache_key=cache_key,
+            research_id=payload.research_id,
+            ticker=ticker,
+            kind="company_dashboard",
+            payload=result,
+        )
+        return result
     except LLMConfigurationError as exc:
         logger.exception("LLM configuration error while building single company dashboard")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -1602,8 +1639,31 @@ def build_single_company_financials_response(payload: CompanyFinancialsRequest) 
 
 
 def handle_single_company_financials_request(payload: CompanyFinancialsRequest) -> dict:
+    company = normalize_dashboard_company(payload.company)
+    ticker = str(company.get("ticker") or "").strip()
+    cache_key = build_company_cache_key(
+        kind="company_financials",
+        research_id=payload.research_id,
+        ticker=ticker,
+        provider=payload.provider,
+        model=payload.model,
+    )
+    if not payload.force_refresh:
+        cached = get_cached_company_analysis(cache_key)
+        if cached:
+            return cached
+
     try:
-        return build_single_company_financials_response(payload)
+        result = build_single_company_financials_response(payload)
+        result["research_id"] = payload.research_id
+        save_company_analysis(
+            cache_key=cache_key,
+            research_id=payload.research_id,
+            ticker=ticker,
+            kind="company_financials",
+            payload=result,
+        )
+        return result
     except LLMConfigurationError as exc:
         logger.exception("LLM configuration error while building single company financials")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -1659,12 +1719,22 @@ def refresh_krx_listings_api(payload: KrxListingsRefreshRequest) -> dict:
 
 @app.post("/api/new-research")
 def create_new_research(request: NewResearchRequest) -> dict:
+    signature = build_research_signature(
+        url=str(request.url),
+        provider=request.provider,
+        model=request.model,
+        article_char_limit=request.article_char_limit,
+    )
+    if not request.force_refresh:
+        cached = get_cached_research(signature)
+        if cached:
+            return cached
+
     result = run_required_three_company_selection(request)
     companies = build_frontend_company_payload(
         result["selection"]["companies"]
     )
-
-    return {
+    payload = {
         "status": "success",
         "summary": result["selection"].get("summary", ""),
         "companies": companies,
@@ -1672,7 +1742,29 @@ def create_new_research(request: NewResearchRequest) -> dict:
         "provider": result["provider"],
         "model": result["model"],
         "selection": result["selection"],
+        "cache": {
+            "hit": False,
+            "kind": "research_selection",
+        },
     }
+    research_id = save_research(
+        signature=signature,
+        url=str(request.url),
+        provider=result["provider"],
+        model=result["model"],
+        article_char_limit=request.article_char_limit,
+        payload=payload,
+    )
+    payload["research_id"] = research_id
+    return payload
+
+
+@app.get("/api/new-research/{research_id}")
+def get_new_research(research_id: str) -> dict:
+    cached = get_cached_research_by_id(research_id)
+    if not cached:
+        raise HTTPException(status_code=404, detail="research_id를 찾을 수 없습니다.")
+    return cached
 
 
 @app.post("/api/new-research-with-charts")

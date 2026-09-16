@@ -52,6 +52,7 @@ function RecommendedList() {
       sessionStorage.setItem(
         'selectedResearchContext',
         JSON.stringify({
+          research_id: researchData.research_id,
           provider: researchData.provider,
           model: researchData.model,
           article: researchData.article,

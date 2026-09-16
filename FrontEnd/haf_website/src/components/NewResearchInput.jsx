@@ -50,6 +50,7 @@ function NewResearchInput() {
 
       const result = await response.json();
 
+      clearCompanyDashboardCache();
       sessionStorage.setItem('researchData', JSON.stringify(result));
 
       window.location.href =
@@ -207,6 +208,14 @@ function NewResearchInput() {
       )}
     </section>
   );
+}
+
+function clearCompanyDashboardCache() {
+  Object.keys(sessionStorage).forEach((key) => {
+    if (key.startsWith('companyDashboard:')) {
+      sessionStorage.removeItem(key);
+    }
+  });
 }
 
 function ResearchStep({ number, title, desc, icon }) {

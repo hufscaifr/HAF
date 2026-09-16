@@ -39,6 +39,18 @@ export function CompanyDashboard() {
       const controller = new AbortController();
 
       const loadDashboard = async () => {
+        const companyCacheKey = buildCompanyCacheKey(
+          researchContext.research_id,
+          companySeed
+        );
+        const cachedCompany = readCachedCompany(companyCacheKey);
+        if (cachedCompany) {
+          sessionStorage.setItem('selectedCompany', JSON.stringify(cachedCompany));
+          setDashboardData(cachedCompany);
+          setLoading(false);
+          return;
+        }
+
         setDashboardData(companySeed);
 
         try {
@@ -50,6 +62,7 @@ export function CompanyDashboard() {
             },
             body: JSON.stringify({
               company: companySeed,
+              research_id: researchContext.research_id || undefined,
               provider: researchContext.provider || 'openai',
               model: researchContext.model || undefined,
             }),
@@ -92,6 +105,7 @@ export function CompanyDashboard() {
             },
             body: JSON.stringify({
               company: mergedCompany,
+              research_id: researchContext.research_id || undefined,
               provider: researchContext.provider || 'openai',
               model: researchContext.model || undefined,
             }),
@@ -126,6 +140,7 @@ export function CompanyDashboard() {
                   financialCompany
                 );
                 sessionStorage.setItem('selectedCompany', JSON.stringify(nextData));
+                writeCachedCompany(companyCacheKey, nextData);
                 return nextData;
               });
             })
@@ -572,6 +587,48 @@ function formatApiErrorDetail(detail) {
     return JSON.stringify(detail);
   } catch {
     return String(detail);
+  }
+}
+
+function buildCompanyCacheKey(researchId, company) {
+  const ticker =
+    company?.korean_ticker ||
+    String(company?.ticker || '').split('.')[0] ||
+    company?.name ||
+    'unknown';
+
+  return `companyDashboard:${researchId || 'local'}:${ticker}`;
+}
+
+function readCachedCompany(cacheKey) {
+  if (!cacheKey) {
+    return null;
+  }
+
+  try {
+    const rawValue = sessionStorage.getItem(cacheKey);
+    if (!rawValue) {
+      return null;
+    }
+
+    const parsed = JSON.parse(rawValue);
+    return hasUsefulObjectData(parsed) ? parsed : null;
+  } catch (error) {
+    console.error('상세 분석 캐시 파싱 실패:', error);
+    sessionStorage.removeItem(cacheKey);
+    return null;
+  }
+}
+
+function writeCachedCompany(cacheKey, company) {
+  if (!cacheKey || !hasUsefulObjectData(company)) {
+    return;
+  }
+
+  try {
+    sessionStorage.setItem(cacheKey, JSON.stringify(company));
+  } catch (error) {
+    console.error('상세 분석 캐시 저장 실패:', error);
   }
 }
 
