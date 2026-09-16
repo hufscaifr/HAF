@@ -236,11 +236,20 @@ export function CompanyDashboard() {
 
   const highlights = dashboardData.technical_highlights || [];
 
-  const riskList =
-    dashboardData.risks ||
-    dashboardData.key_catalysts ||
-    dashboardData.catalysts ||
-    [];
+  const recommendationReason =
+    dashboardData.recommendation_reason ||
+    dashboardData.reason ||
+    dashboardData.ai_opinion ||
+    dashboardData.article_relevance ||
+    '';
+
+  const riskList = firstNonEmptyArray(
+    dashboardData.risks,
+    dashboardData.key_risks,
+    dashboardData.keyRisks,
+    dashboardData.key_catalysts,
+    dashboardData.catalysts
+  );
 
   const deepRiskAnalysis = dashboardData.risk_analysis || '';
 
@@ -303,9 +312,9 @@ export function CompanyDashboard() {
               <span>{dashboardData.market || 'KOSPI'}</span>
             </div>
 
-            {dashboardData.recommendation_reason && (
+            {recommendationReason && (
               <p className="company-hero-summary">
-                {dashboardData.recommendation_reason}
+                {recommendationReason}
               </p>
             )}
           </div>
@@ -383,9 +392,7 @@ export function CompanyDashboard() {
               <div className="company-feature-card">
                 <div className="company-feature-label">AI Recommendation</div>
                 <p className="company-feature-text">
-                  {dashboardData.recommendation_reason ||
-                    dashboardData.reason ||
-                    '추천 이유 정보가 없습니다.'}
+                  {recommendationReason || '추천 이유 정보가 없습니다.'}
                 </p>
               </div>
             )}
@@ -464,9 +471,9 @@ export function CompanyDashboard() {
                   <div className="company-risk-list">
                     {riskList.length > 0 ? (
                       riskList.map((item, index) => (
-                        <div key={`${item}-${index}`} className="company-risk-item">
+                        <div key={`${formatRiskItem(item)}-${index}`} className="company-risk-item">
                           <div className="company-risk-dot" />
-                          <span>{item}</span>
+                          <span>{formatRiskItem(item)}</span>
                         </div>
                       ))
                     ) : (
@@ -563,6 +570,28 @@ function isUsefulValue(value) {
   }
 
   return value !== null && value !== undefined && value !== '';
+}
+
+function firstNonEmptyArray(...values) {
+  return values.find((value) => Array.isArray(value) && value.length > 0) || [];
+}
+
+function formatRiskItem(item) {
+  if (typeof item === 'string') {
+    return item;
+  }
+
+  if (item && typeof item === 'object') {
+    return (
+      item.title ||
+      item.detail ||
+      item.description ||
+      item.name ||
+      JSON.stringify(item)
+    );
+  }
+
+  return String(item || '');
 }
 
 function formatApiErrorDetail(detail) {

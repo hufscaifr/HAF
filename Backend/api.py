@@ -1209,6 +1209,17 @@ def add_analysis_to_companies(
         technical_analysis_text = ai_technical_analysis.get("technical_analysis_text")
         technical_highlights = ai_technical_analysis.get("technical_highlights", [])
         latest_indicators = technical.get("latest_indicators", {})
+        recommendation_reason = (
+            selected.get("rationale")
+            or company.get("recommendation_reason")
+            or company.get("ai_opinion")
+            or selected.get("article_relevance")
+            or company.get("article_relevance")
+        )
+        article_relevance = selected.get("article_relevance") or company.get("article_relevance")
+        key_catalysts = selected.get("key_catalysts") or company.get("key_catalysts", [])
+        risks = selected.get("risks") or company.get("risks", [])
+        risk_analysis = selected.get("risk_analysis") or company.get("risk_analysis")
 
         enriched_companies.append(
             {
@@ -1216,12 +1227,12 @@ def add_analysis_to_companies(
                 "latest_close": market.get("latest_close") or technical.get("latest_close"),
                 "latest_close_date": market.get("end_date") or technical.get("latest_date"),
                 "currency": market.get("currency"),
-                "ai_opinion": selected.get("rationale") or selected.get("article_relevance"),
-                "recommendation_reason": selected.get("rationale"),
-                "article_relevance": selected.get("article_relevance"),
-                "key_catalysts": selected.get("key_catalysts", []),
-                "risks": selected.get("risks", []),
-                "risk_analysis": selected.get("risk_analysis"),
+                "ai_opinion": recommendation_reason,
+                "recommendation_reason": recommendation_reason,
+                "article_relevance": article_relevance,
+                "key_catalysts": key_catalysts,
+                "risks": risks,
+                "risk_analysis": risk_analysis,
                 "technical_opinion": opinion.get("opinion"),
                 "technical_opinion_score": opinion.get("score"),
                 "technical_confidence": opinion.get("confidence"),
