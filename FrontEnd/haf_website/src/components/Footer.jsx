@@ -1,4 +1,4 @@
-function Footer({ bgTitle = 'HAFS', noticeText = '인공지능 기반 금융연구 센터' }) {
+function Footer({ bgTitle = 'HAF', noticeText = '인공지능 기반 금융연구 센터' }) {
   return (
     <footer className="caifr-footer">
       <div className="caifr-footer__inner">
