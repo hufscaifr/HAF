@@ -129,7 +129,15 @@ class FinancialCalendarRefreshRequest(BaseModel):
     )
     model: Optional[str] = Field(
         default=None,
-        description="OpenAI model used for calendar collection.",
+        description="OpenAI model used only for event analysis.",
+    )
+    providers: Optional[list[Literal["fred", "fomc", "dart", "yfinance", "ecos"]]] = Field(
+        default=None,
+        description="Structured data providers to run. Defaults to all providers.",
+    )
+    analyze: bool = Field(
+        default=True,
+        description="Generate importance, AI comment, and expected impact after collection.",
     )
 
 
@@ -243,6 +251,8 @@ def refresh_financial_calendar_events(request: FinancialCalendarRefreshRequest) 
             start_date=parsed_start_date,
             end_date=parsed_end_date,
             model=request.model or DEFAULT_FINANCIAL_CALENDAR_MODEL,
+            providers=request.providers,
+            analyze=request.analyze,
         )
     except FinancialCalendarError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

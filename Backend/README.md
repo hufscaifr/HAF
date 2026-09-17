@@ -128,7 +128,14 @@ The `companies` array is forced to exactly three items for the current Framer la
 
 ### Financial calendar API
 
-The backend can collect major financial calendar events with the OpenAI Responses API web search tool, store them in SQLite, and serve them to the frontend.
+The backend collects calendar facts from structured providers, stores normalized events in SQLite, and uses OpenAI only for importance and market-impact analysis. Collection does not use AI search.
+
+Provider responsibilities:
+- `fred`: official US economic release dates (`FRED_API_KEY`)
+- `fomc`: Federal Reserve FOMC schedule
+- `dart`: filed Korean disclosures (`DART_API_KEY`)
+- `yfinance`: configured company earnings dates
+- `ecos`: optional Bank of Korea release-calendar JSON adapter
 
 By default, the calendar uses a short rolling window from today through 45 days later. The GET endpoint refreshes this near-term window once per day before returning events.
 The collector is intentionally selective: it focuses on medium/high-impact events for Korean investors rather than trying to fill every date. If no reliable events exist in a window, the API can return an empty `events` array.
@@ -140,7 +147,7 @@ GET http://localhost:8000/api/financial-calendar
 Optional query parameters:
 - `start_date`: `YYYY-MM-DD`
 - `end_date`: `YYYY-MM-DD`
-- `category`: `rate`, `economic_indicator`, `earning`, `policy`, `market_holiday`, `auction`, or `other`
+- `category`: `macro`, `earnings`, `disclosure`, `policy`, or `market_holiday`
 - `importance`: `high`, `medium`, or `low`
 - `refresh_if_stale`: `true` or `false`
 - `model`: OpenAI model override for stale refreshes
@@ -155,12 +162,19 @@ Response shape:
   "count": 1,
   "events": [
     {
-      "id": 1,
+      "id": "evt-yfinance-8a1f...",
       "date": "2026-08-20",
       "title": "엔비디아 실적 발표",
-      "category": "earning",
+      "type": "earnings",
       "importance": "high",
-      "detail": "AI 반도체 수요 지속 여부가 주목돼요.",
+      "time": "",
+      "forecast": "0.84",
+      "consensus": "0.84",
+      "previous": null,
+      "actual": null,
+      "detail": "NVDA의 실적 발표 예정일입니다.",
+      "aiComment": "데이터센터 매출과 가이던스가 반도체 투자심리를 좌우합니다.",
+      "expectedImpact": "가이던스가 컨센서스를 상회하면 AI 반도체 밸류체인 강세가 예상됩니다.",
       "country": "US",
       "source_name": "NVIDIA Investor Relations",
       "source_url": "https://investor.nvidia.com/"
@@ -182,7 +196,9 @@ Content-Type: application/json
 
 {
   "start_date": "2026-07-19",
-  "end_date": "2026-09-02"
+  "end_date": "2026-09-02",
+  "providers": ["fred", "fomc", "dart", "yfinance", "ecos"],
+  "analyze": true
 }
 ```
 
@@ -192,20 +208,24 @@ To seed the DB from the backend without running the API server:
 python3 scripts/seed_financial_calendar.py
 ```
 
-The seed script defaults to a 45-day lookahead split into 15-day OpenAI requests. You can override it when needed:
+The seed script splits the lookahead into provider collection windows. Use `--no-analysis` to collect and store facts without an OpenAI call.
 
 ```bash
 python3 scripts/seed_financial_calendar.py --lookahead-days 90 --chunk-days 15
 ```
 
 Configuration:
-- `OPENAI_API_KEY`: required for calendar refresh.
-- `OPENAI_FINANCIAL_CALENDAR_MODEL`: optional, defaults to the existing OpenAI model setting.
+- `FRED_API_KEY`: enables official FRED release-date collection.
+- `DART_API_KEY`: enables OpenDART disclosure collection.
+- `OPENAI_API_KEY`: optional for collection; required only for AI analysis.
+- `OPENAI_FINANCIAL_CALENDAR_MODEL`: optional analysis model.
+- `CAM_FINANCIAL_CALENDAR_ANALYSIS_BATCH_SIZE`: events per AI analysis request, defaults to `25`.
+- `CAM_CALENDAR_EARNINGS_TICKERS`: optional comma-separated Yahoo symbols.
+- `ECOS_RELEASE_CALENDAR_URL`: optional official Bank of Korea calendar JSON feed.
 - `CAM_FINANCIAL_CALENDAR_DB`: optional SQLite path, defaults to `financial_calendar.db` in the project root.
 - `CAM_FINANCIAL_CALENDAR_LOOKAHEAD_DAYS`: optional default API window, defaults to `45`.
 - `OPENAI_FINANCIAL_CALENDAR_TIMEOUT_SECONDS`: optional OpenAI request timeout, defaults to `90`.
-- `OPENAI_FINANCIAL_CALENDAR_SEARCH_CONTEXT_SIZE`: optional web search context size, defaults to `low`.
-- `OPENAI_FINANCIAL_CALENDAR_ALLOWED_DOMAINS`: optional comma-separated web search domain allowlist. Defaults to core sources such as Fed, BOK, BLS, BEA, KOSTAT, KRX, DART, Yahoo Finance, Nasdaq, and major company IR domains.
+- `CAM_CALENDAR_HTTP_TIMEOUT_SECONDS`: provider HTTP timeout, defaults to `20`.
 - `CAM_TIMEZONE`: optional, defaults to `Asia/Seoul`.
 
 If the frontend also needs stock-price chart images, use:

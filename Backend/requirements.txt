@@ -6,6 +6,7 @@ uvicorn[standard]>=0.30.0
 openai>=1.0.0
 google-genai>=1.0.0
 yfinance>=1.2.0
+finance-datareader>=0.9.96
 python-dotenv>=1.0.0
 pandas-ta-classic>=0.3.0
 matplotlib>=3.8.0
