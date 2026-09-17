@@ -5340,6 +5340,51 @@ a {
   margin-top: 24px;
 }
 
+.company-stage-actions-wrap {
+  margin-bottom: 18px;
+}
+
+.company-stage-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.company-stage-actions button {
+  background: #1d1d1f;
+  border: 1px solid #1d1d1f;
+  border-radius: 8px;
+  color: #ffffff;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  min-height: 40px;
+  padding: 0 15px;
+  transition: background 180ms ease, color 180ms ease, transform 180ms ease;
+}
+
+.company-stage-actions button + button {
+  background: #ffffff;
+  color: #1d1d1f;
+}
+
+.company-stage-actions button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.company-stage-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.company-stage-error {
+  color: #a62b35;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 9px 0 0;
+}
+
 /* ===================================================
  FEATURE CARD
 =================================================== */

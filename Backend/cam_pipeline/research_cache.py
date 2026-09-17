@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RESEARCH_CACHE_DB_PATH = PROJECT_ROOT / "research_cache.db"
+RESEARCH_PIPELINE_VERSION = os.getenv("CAM_RESEARCH_PIPELINE_VERSION", "news_pipeline_v2")
 
 
 def get_research_cache_db_path() -> Path:
@@ -75,6 +76,7 @@ def build_research_signature(
 ) -> str:
     return stable_hash(
         {
+            "pipeline_version": RESEARCH_PIPELINE_VERSION,
             "url": normalize_url(url),
             "provider": provider,
             "model": model or "",

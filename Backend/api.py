@@ -37,6 +37,7 @@ from cam_pipeline.price_plot import (
     DEFAULT_PLOT_PERIOD,
     DEFAULT_RECENT_POINTS,
     generate_report_price_plots,
+    generate_price_plots,
 )
 from cam_pipeline.opinion_engine import derive_company_opinions
 from cam_pipeline.technical_analysis import DEFAULT_RECENT_ROWS, analyze_market_data_companies
@@ -116,6 +117,21 @@ class CompanyFinancialsRequest(BaseModel):
     model: Optional[str] = None
     daily_plot_period: str = DEFAULT_DAILY_PLOT_PERIOD
     daily_plot_interval: str = DEFAULT_DAILY_PLOT_INTERVAL
+
+
+class CompanyStageRequest(BaseModel):
+    company: dict[str, Any]
+    research_id: Optional[str] = None
+    force_refresh: bool = False
+    provider: Literal["openai", "gemini"] = DEFAULT_PROVIDER
+    model: Optional[str] = None
+
+
+class CompanyTechnicalDataRequest(CompanyStageRequest):
+    period: str = DEFAULT_DAILY_PLOT_PERIOD
+    interval: str = DEFAULT_DAILY_PLOT_INTERVAL
+    recent_points: int = Field(default=DEFAULT_DAILY_RECENT_POINTS, ge=30, le=500)
+    recent_rows: int = Field(default=DEFAULT_RECENT_ROWS, ge=1, le=30)
 
 
 class FinancialCalendarRefreshRequest(BaseModel):
@@ -1714,6 +1730,257 @@ def handle_single_company_financials_request(payload: CompanyFinancialsRequest) 
             status_code=500,
             detail=f"company-financials 처리 중 오류가 발생했습니다: {exc}",
         ) from exc
+
+
+def build_stage_cache_key(
+    kind: str,
+    payload: CompanyStageRequest,
+    ticker: str,
+    research_scoped: bool = False,
+) -> str:
+    return build_company_cache_key(
+        kind=kind,
+        research_id=payload.research_id if research_scoped else None,
+        ticker=ticker,
+        provider=payload.provider if kind.endswith("analysis") or kind == "company_profile" else "data",
+        model=payload.model if kind.endswith("analysis") or kind == "company_profile" else None,
+    )
+
+
+def run_company_json_analysis(
+    prompt: str,
+    schema: dict[str, Any],
+    schema_name: str,
+    provider: str,
+    model: Optional[str],
+) -> dict[str, Any]:
+    if provider == "openai":
+        api_key = normalize_env_api_key(os.getenv("OPENAI_API_KEY"))
+        if not api_key:
+            raise LLMConfigurationError("OPENAI_API_KEY is not set.")
+        response = get_openai_client_class()(api_key=api_key).responses.create(
+            model=model or os.getenv("OPENAI_MODEL", "gpt-5-mini"),
+            input=prompt,
+            store=False,
+            timeout=float(os.getenv("CAM_COMPANY_AI_TIMEOUT_SECONDS", "60")),
+            text={"format": {"type": "json_schema", "name": schema_name, "strict": True, "schema": schema}},
+        )
+        if not response.output_text:
+            raise RuntimeError("OpenAI returned an empty company analysis response.")
+        return json.loads(response.output_text)
+    if provider == "gemini":
+        genai_module, genai_types_module = get_gemini_modules()
+        api_key = normalize_env_api_key(os.getenv("GEMINI_API_KEY"))
+        if not api_key:
+            raise LLMConfigurationError("GEMINI_API_KEY is not set.")
+        response = genai_module.Client(api_key=api_key).models.generate_content(
+            model=model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+            contents=prompt,
+            config=genai_types_module.GenerateContentConfig(
+                response_mime_type="application/json", response_json_schema=schema,
+            ),
+        )
+        if not response.text:
+            raise RuntimeError("Gemini returned an empty company analysis response.")
+        return json.loads(response.text)
+    raise ValueError(f"Unsupported provider: {provider}")
+
+
+def save_stage_result(
+    cache_key: str,
+    payload: CompanyStageRequest,
+    ticker: str,
+    kind: str,
+    result: dict[str, Any],
+    research_scoped: bool = False,
+) -> dict[str, Any]:
+    save_company_analysis(
+        cache_key=cache_key,
+        research_id=payload.research_id if research_scoped else None,
+        ticker=ticker,
+        kind=kind,
+        payload=result,
+    )
+    return result
+
+
+@app.post("/api/company/profile")
+def get_company_profile(payload: CompanyStageRequest) -> dict:
+    company = normalize_dashboard_company(payload.company)
+    ticker = company["ticker"]
+    cache_key = build_stage_cache_key("company_profile", payload, ticker)
+    if not payload.force_refresh:
+        cached = get_cached_company_analysis(cache_key)
+        if cached:
+            return cached
+
+    schema = {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "overview": {"type": "string"}, "industry": {"type": "string"},
+            "business_model": {"type": "string"},
+            "key_products": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
+        },
+        "required": ["overview", "industry", "business_model", "key_products"],
+    }
+    prompt = f"""
+한국 상장기업 소개 페이지를 작성해 주세요. 확인되지 않은 수치나 최신 실적은 만들지 마세요.
+기업 개요는 3문장 이내, 사업 모델은 2문장 이내의 한국어로 작성하세요.
+
+기업명: {company['company_name_ko']}
+영문명: {company['company_name']}
+종목코드: {ticker}
+소속 시장: {company['market']}
+뉴스 선정 이유: {company.get('rationale', '')}
+""".strip()
+    analysis = run_company_json_analysis(prompt, schema, "company_profile", payload.provider, payload.model)
+    result = {
+        "status": "success",
+        "company": {
+            **build_frontend_company_payload([company])[0],
+            "overview": analysis["overview"], "industry": analysis["industry"],
+            "business_model": analysis["business_model"], "key_products": analysis["key_products"],
+        },
+    }
+    return save_stage_result(cache_key, payload, ticker, "company_profile", result)
+
+
+@app.post("/api/company/technical-data")
+def get_company_technical_data(payload: CompanyTechnicalDataRequest, http_request: Request) -> dict:
+    company = normalize_dashboard_company(payload.company)
+    ticker = company["ticker"]
+    cache_key = build_stage_cache_key("technical_data", payload, ticker)
+    if not payload.force_refresh:
+        cached = get_cached_company_analysis(cache_key)
+        if cached:
+            return cached
+    market_data = fetch_market_data_for_companies([company], period=payload.period, interval=payload.interval)
+    technical = analyze_market_data_companies(market_data, recent_rows=payload.recent_rows)
+    opinions = derive_company_opinions(technical)
+    plots = generate_report_price_plots(
+        daily_companies=market_data, intraday_companies=[], output_dir=str(PLOTS_DIR),
+        daily_recent_points=payload.recent_points, clear_output_dir=False,
+    )
+    display_company = add_chart_urls_to_companies(
+        build_frontend_company_payload([company]), plots, http_request,
+    )[0]
+    technical_item = technical[0] if technical else {}
+    opinion = opinions[0] if opinions else {}
+    display_company.update({
+        "technical_context": technical_item,
+        "technical_summary": {
+            **technical_item.get("latest_indicators", {}),
+            "latest_signal": technical_item.get("latest_signal", {}),
+        },
+        "technical_opinion": opinion.get("opinion"),
+        "opinion_rationale": opinion.get("rationale"),
+        "positives": opinion.get("positives", []), "negatives": opinion.get("negatives", []),
+    })
+    result = {"status": "success", "company": display_company, "source": "yfinance+pandas_ta"}
+    return save_stage_result(cache_key, payload, ticker, "technical_data", result)
+
+
+@app.post("/api/company/technical-analysis")
+def get_company_technical_ai_analysis(payload: CompanyStageRequest) -> dict:
+    company = normalize_dashboard_company(payload.company)
+    ticker = company["ticker"]
+    cache_key = build_stage_cache_key("technical_analysis", payload, ticker)
+    if not payload.force_refresh:
+        cached = get_cached_company_analysis(cache_key)
+        if cached:
+            return cached
+    technical_context = payload.company.get("technical_context")
+    if not isinstance(technical_context, dict) or not technical_context:
+        raise HTTPException(status_code=409, detail="기술 데이터 수집을 먼저 실행해 주세요.")
+    opinion = {
+        "ticker": ticker, "opinion": payload.company.get("technical_opinion"),
+        "rationale": payload.company.get("opinion_rationale"),
+        "positives": payload.company.get("positives", []), "negatives": payload.company.get("negatives", []),
+    }
+    analyses = generate_institutional_technical_analyses(
+        [technical_context], [opinion], payload.provider, payload.model,
+    )
+    analysis = analyses.get(ticker, {})
+    result = {"status": "success", "company": {**payload.company, **analysis}}
+    return save_stage_result(cache_key, payload, ticker, "technical_analysis", result)
+
+
+@app.post("/api/company/financial-data")
+def get_company_financial_data(payload: CompanyStageRequest) -> dict:
+    company = normalize_dashboard_company(payload.company)
+    company["latest_close"] = payload.company.get("latest_close")
+    ticker = company["ticker"]
+    cache_key = build_stage_cache_key("financial_data", payload, ticker)
+    if not payload.force_refresh:
+        cached = get_cached_company_analysis(cache_key)
+        if cached:
+            return cached
+    fundamentals = analyze_market_data_fundamentals([company])
+    item = fundamentals[0] if fundamentals else {}
+    display_company = build_frontend_company_payload([company])[0]
+    display_company.update({
+        "financial_metrics": build_financial_metrics(item),
+        "financial_context": item,
+        "financial_error": item.get("error"),
+    })
+    result = {"status": "success", "company": display_company, "source": "OpenDART"}
+    return save_stage_result(cache_key, payload, ticker, "financial_data", result)
+
+
+@app.post("/api/company/financial-analysis")
+def get_company_financial_ai_analysis(payload: CompanyStageRequest) -> dict:
+    company = normalize_dashboard_company(payload.company)
+    ticker = company["ticker"]
+    cache_key = build_stage_cache_key("financial_analysis", payload, ticker)
+    if not payload.force_refresh:
+        cached = get_cached_company_analysis(cache_key)
+        if cached:
+            return cached
+    financial_context = payload.company.get("financial_context")
+    if not isinstance(financial_context, dict) or not financial_context:
+        raise HTTPException(status_code=409, detail="재무 데이터 수집을 먼저 실행해 주세요.")
+    analyses = generate_institutional_financial_analyses(
+        [company], [financial_context], payload.provider, payload.model,
+    )
+    result = {
+        "status": "success",
+        "company": {**payload.company, "financial_analysis": analyses.get(ticker, "")},
+    }
+    return save_stage_result(cache_key, payload, ticker, "financial_analysis", result)
+
+
+@app.post("/api/company/risk-analysis")
+def get_company_risk_analysis(payload: CompanyStageRequest) -> dict:
+    company = normalize_dashboard_company(payload.company)
+    ticker = company["ticker"]
+    cache_key = build_stage_cache_key("risk_analysis", payload, ticker, research_scoped=True)
+    if not payload.force_refresh:
+        cached = get_cached_company_analysis(cache_key)
+        if cached:
+            return cached
+    research = get_cached_research_by_id(payload.research_id) if payload.research_id else None
+    article = (research or {}).get("article", {})
+    schema = {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "risks": {"type": "array", "items": {"type": "string"}, "minItems": 3, "maxItems": 5},
+            "risk_analysis": {"type": "string"},
+        },
+        "required": ["risks", "risk_analysis"],
+    }
+    prompt = f"""
+아래 기업과 뉴스의 투자 리스크를 한국어로 분석해 주세요. 검증되지 않은 사실이나 수치를 만들지 말고,
+핵심 리스크 3~5개와 4~6문장의 짧은 종합 의견을 작성하세요.
+
+기업: {json.dumps(company, ensure_ascii=False)}
+기사 제목: {article.get('title', '')}
+기사 요약: {(research or {}).get('summary', '')}
+기사 관련성: {payload.company.get('article_relevance', '')}
+추천 논리: {payload.company.get('recommendation_reason', '')}
+""".strip()
+    analysis = run_company_json_analysis(prompt, schema, "company_risk_analysis", payload.provider, payload.model)
+    result = {"status": "success", "company": {**payload.company, **analysis}}
+    return save_stage_result(cache_key, payload, ticker, "risk_analysis", result, research_scoped=True)
 
 
 @app.get("/api/krx-listings")

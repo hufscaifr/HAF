@@ -4,6 +4,9 @@ import { API_HEADERS, apiUrl } from '../config/api';
 export function CompanyDashboard() {
   const [dashboardData, setDashboardData] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
+  const [researchContext, setResearchContext] = React.useState({});
+  const [stageLoading, setStageLoading] = React.useState({});
+  const [stageErrors, setStageErrors] = React.useState({});
   const [activeTab, setActiveTab] = React.useState('추천 이유');
   const [activeSubTab, setActiveSubTab] = React.useState('Trend');
 
@@ -13,7 +16,7 @@ export function CompanyDashboard() {
 
     if (savedData) {
       let companySeed = null;
-      let researchContext = {};
+      let savedResearchContext = {};
 
       try {
         companySeed = JSON.parse(savedData);
@@ -31,30 +34,17 @@ export function CompanyDashboard() {
       }
 
       try {
-        researchContext = savedContext ? JSON.parse(savedContext) : {};
+        savedResearchContext = savedContext ? JSON.parse(savedContext) : {};
       } catch (error) {
         console.error('분석 컨텍스트 파싱 에러:', error);
       }
 
+      setResearchContext(savedResearchContext);
+      setDashboardData(companySeed);
       const controller = new AbortController();
-
-      const loadDashboard = async () => {
-        const companyCacheKey = buildCompanyCacheKey(
-          researchContext.research_id,
-          companySeed
-        );
-        const cachedCompany = readCachedCompany(companyCacheKey);
-        if (cachedCompany) {
-          sessionStorage.setItem('selectedCompany', JSON.stringify(cachedCompany));
-          setDashboardData(cachedCompany);
-          setLoading(false);
-          return;
-        }
-
-        setDashboardData(companySeed);
-
+      const loadProfile = async () => {
         try {
-          const response = await fetch(apiUrl('/api/company-dashboard'), {
+          const response = await fetch(apiUrl('/api/company/profile'), {
             method: 'POST',
             headers: {
               ...API_HEADERS,
@@ -62,15 +52,15 @@ export function CompanyDashboard() {
             },
             body: JSON.stringify({
               company: companySeed,
-              research_id: researchContext.research_id || undefined,
-              provider: researchContext.provider || 'openai',
-              model: researchContext.model || undefined,
+              research_id: savedResearchContext.research_id || undefined,
+              provider: savedResearchContext.provider || 'openai',
+              model: savedResearchContext.model || undefined,
             }),
             signal: controller.signal,
           });
 
           if (!response.ok) {
-            let message = '기업 상세 분석 응답 에러';
+            let message = '기업 소개 응답 에러';
 
             try {
               const errorBody = await response.json();
@@ -83,9 +73,9 @@ export function CompanyDashboard() {
           }
 
           const result = await response.json();
-          const detailedCompany = result.company || result.companies?.[0] || {};
+          const detailedCompany = result.company || {};
           if (!hasUsefulObjectData(detailedCompany)) {
-            throw new Error('기업 상세 분석 응답이 비어 있습니다.');
+            throw new Error('기업 소개 응답이 비어 있습니다.');
           }
 
           const mergedCompany = mergeUsefulCompanyData(
@@ -95,79 +85,17 @@ export function CompanyDashboard() {
 
           sessionStorage.setItem('selectedCompany', JSON.stringify(mergedCompany));
           setDashboardData(mergedCompany);
-          setLoading(false);
-
-          fetch(apiUrl('/api/company-financials'), {
-            method: 'POST',
-            headers: {
-              ...API_HEADERS,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              company: mergedCompany,
-              research_id: researchContext.research_id || undefined,
-              provider: researchContext.provider || 'openai',
-              model: researchContext.model || undefined,
-            }),
-            signal: controller.signal,
-          })
-            .then(async (financialResponse) => {
-              if (!financialResponse.ok) {
-                let message = '재무 분석 응답 에러';
-
-                try {
-                  const errorBody = await financialResponse.json();
-                  message = formatApiErrorDetail(errorBody.detail) || message;
-                } catch {
-                  message = `${message} (${financialResponse.status})`;
-                }
-
-                throw new Error(message);
-              }
-
-              return financialResponse.json();
-            })
-            .then((financialResult) => {
-              const financialCompany =
-                financialResult.company || financialResult.companies?.[0] || {};
-              if (!hasUsefulObjectData(financialCompany)) {
-                throw new Error('재무 분석 응답이 비어 있습니다.');
-              }
-
-              setDashboardData((currentData) => {
-                const nextData = mergeUsefulCompanyData(
-                  currentData || mergedCompany,
-                  financialCompany
-                );
-                sessionStorage.setItem('selectedCompany', JSON.stringify(nextData));
-                writeCachedCompany(companyCacheKey, nextData);
-                return nextData;
-              });
-            })
-            .catch((error) => {
-              if (error.name !== 'AbortError') {
-                console.error('기업 재무 분석 호출 실패:', error);
-                setDashboardData((currentData) => ({
-                  ...(currentData || mergedCompany),
-                  financial_error:
-                    error.message || '재무 분석 데이터를 불러오지 못했습니다.',
-                }));
-              }
-            });
         } catch (error) {
           if (error.name !== 'AbortError') {
-            console.error('기업 상세 분석 호출 실패:', error);
-            setDashboardData({
-              ...companySeed,
-              analysis_error:
-                error.message || '기업 상세 분석 데이터를 불러오지 못했습니다.',
-            });
+            console.error('기업 소개 호출 실패:', error);
+            setStageErrors({ profile: error.message });
           }
+        } finally {
           setLoading(false);
         }
       };
 
-      loadDashboard();
+      loadProfile();
 
       return () => controller.abort();
     }
@@ -175,11 +103,47 @@ export function CompanyDashboard() {
     setLoading(false);
   }, []);
 
+  const runStage = async (stage, endpoint, forceRefresh = false) => {
+    if (!dashboardData || stageLoading[stage]) return;
+    setStageLoading((current) => ({ ...current, [stage]: true }));
+    setStageErrors((current) => ({ ...current, [stage]: null }));
+
+    try {
+      const response = await fetch(apiUrl(endpoint), {
+        method: 'POST',
+        headers: { ...API_HEADERS, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          company: dashboardData,
+          research_id: researchContext.research_id || undefined,
+          provider: researchContext.provider || 'openai',
+          model: researchContext.model || undefined,
+          force_refresh: forceRefresh,
+        }),
+      });
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({}));
+        throw new Error(formatApiErrorDetail(errorBody.detail) || `HTTP ${response.status}`);
+      }
+      const result = await response.json();
+      const nextCompany = result.company || {};
+      if (!hasUsefulObjectData(nextCompany)) throw new Error('분석 응답이 비어 있습니다.');
+      setDashboardData((current) => {
+        const merged = mergeUsefulCompanyData(current, nextCompany);
+        sessionStorage.setItem('selectedCompany', JSON.stringify(merged));
+        return merged;
+      });
+    } catch (error) {
+      setStageErrors((current) => ({ ...current, [stage]: error.message }));
+    } finally {
+      setStageLoading((current) => ({ ...current, [stage]: false }));
+    }
+  };
+
   if (loading) {
     return (
       <div className="company-state">
         <div className="company-state-spinner" />
-        <p>AI 분석 데이터를 불러오는 중입니다.</p>
+        <p>기업 소개를 불러오는 중입니다.</p>
       </div>
     );
   }
@@ -310,12 +274,22 @@ export function CompanyDashboard() {
               <span>{ticker}</span>
               <span className="company-meta-divider">·</span>
               <span>{dashboardData.market || 'KOSPI'}</span>
+              {dashboardData.industry && (
+                <>
+                  <span className="company-meta-divider">·</span>
+                  <span>{dashboardData.industry}</span>
+                </>
+              )}
             </div>
 
-            {recommendationReason && (
+            {(dashboardData.overview || recommendationReason) && (
               <p className="company-hero-summary">
-                {recommendationReason}
+                {dashboardData.overview || recommendationReason}
               </p>
+            )}
+
+            {stageErrors.profile && (
+              <p className="company-stage-error">{stageErrors.profile}</p>
             )}
           </div>
 
@@ -414,6 +388,20 @@ export function CompanyDashboard() {
 
             {activeTab === '기술적 분석' && (
               <div className="company-technical-layout">
+                <StageActions
+                  primaryLabel={dashboardData.technical_context ? '기술 데이터 새로고침' : '기술 데이터 불러오기'}
+                  primaryLoading={stageLoading.technicalData}
+                  onPrimary={() => runStage(
+                    'technicalData',
+                    '/api/company/technical-data',
+                    Boolean(dashboardData.technical_context)
+                  )}
+                  secondaryLabel="AI Analyze"
+                  secondaryLoading={stageLoading.technicalAi}
+                  secondaryDisabled={!dashboardData.technical_context}
+                  onSecondary={() => runStage('technicalAi', '/api/company/technical-analysis')}
+                  error={stageErrors.technicalData || stageErrors.technicalAi}
+                />
                 {sortedHighlights.length > 0 && (
                   <div className="company-highlight-grid">
                     {sortedHighlights.map((item, index) => (
@@ -465,6 +453,12 @@ export function CompanyDashboard() {
 
             {activeTab === '리스크 요인' && (
               <div className="company-risk-layout">
+                <StageActions
+                  primaryLabel={deepRiskAnalysis ? '리스크 다시 분석' : '리스크 분석 시작'}
+                  primaryLoading={stageLoading.risk}
+                  onPrimary={() => runStage('risk', '/api/company/risk-analysis')}
+                  error={stageErrors.risk}
+                />
                 <div className="company-content-group">
                   <div className="company-content-label">Key Risks</div>
 
@@ -495,6 +489,20 @@ export function CompanyDashboard() {
 
             {activeTab === '재무 분석' && (
               <div className="company-financial-layout">
+                <StageActions
+                  primaryLabel={dashboardData.financial_context ? '재무 데이터 새로고침' : 'DART 재무 데이터 불러오기'}
+                  primaryLoading={stageLoading.financialData}
+                  onPrimary={() => runStage(
+                    'financialData',
+                    '/api/company/financial-data',
+                    Boolean(dashboardData.financial_context)
+                  )}
+                  secondaryLabel="AI Analyze"
+                  secondaryLoading={stageLoading.financialAi}
+                  secondaryDisabled={!dashboardData.financial_context}
+                  onSecondary={() => runStage('financialAi', '/api/company/financial-analysis')}
+                  error={stageErrors.financialData || stageErrors.financialAi}
+                />
                 <div className="company-financial-grid">
                   <FinancialMetric label="PER" value={formatRatio(fin.per, 'x')} />
                   <FinancialMetric label="PBR" value={formatRatio(fin.pbr, 'x')} />
@@ -624,48 +632,6 @@ function formatApiErrorDetail(detail) {
   }
 }
 
-function buildCompanyCacheKey(researchId, company) {
-  const ticker =
-    company?.korean_ticker ||
-    String(company?.ticker || '').split('.')[0] ||
-    company?.name ||
-    'unknown';
-
-  return `companyDashboard:${researchId || 'local'}:${ticker}`;
-}
-
-function readCachedCompany(cacheKey) {
-  if (!cacheKey) {
-    return null;
-  }
-
-  try {
-    const rawValue = sessionStorage.getItem(cacheKey);
-    if (!rawValue) {
-      return null;
-    }
-
-    const parsed = JSON.parse(rawValue);
-    return hasUsefulObjectData(parsed) ? parsed : null;
-  } catch (error) {
-    console.error('상세 분석 캐시 파싱 실패:', error);
-    sessionStorage.removeItem(cacheKey);
-    return null;
-  }
-}
-
-function writeCachedCompany(cacheKey, company) {
-  if (!cacheKey || !hasUsefulObjectData(company)) {
-    return;
-  }
-
-  try {
-    sessionStorage.setItem(cacheKey, JSON.stringify(company));
-  } catch (error) {
-    console.error('상세 분석 캐시 저장 실패:', error);
-  }
-}
-
 function parseMarkdownSections(text) {
   const lines = String(text || '').split('\n');
   let currentSection = 'Overall';
@@ -704,6 +670,37 @@ function parseMarkdownSections(text) {
   });
 
   return sections;
+}
+
+function StageActions({
+  primaryLabel,
+  primaryLoading,
+  onPrimary,
+  secondaryLabel,
+  secondaryLoading,
+  secondaryDisabled,
+  onSecondary,
+  error,
+}) {
+  return (
+    <div className="company-stage-actions-wrap">
+      <div className="company-stage-actions">
+        <button type="button" onClick={onPrimary} disabled={primaryLoading}>
+          {primaryLoading ? '불러오는 중...' : primaryLabel}
+        </button>
+        {secondaryLabel && (
+          <button
+            type="button"
+            onClick={onSecondary}
+            disabled={secondaryDisabled || secondaryLoading}
+          >
+            {secondaryLoading ? '분석 중...' : secondaryLabel}
+          </button>
+        )}
+      </div>
+      {error && <p className="company-stage-error">{error}</p>}
+    </div>
+  );
 }
 
 function HighlightCard({ item }) {

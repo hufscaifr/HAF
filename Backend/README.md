@@ -126,6 +126,21 @@ Response shape:
 
 The `companies` array is forced to exactly three items for the current Framer layout.
 
+### Staged company research API
+
+Company research is split into small, cacheable requests. Opening a company no longer triggers market, technical, DART, and AI analysis in one request.
+
+```text
+POST /api/company/profile             AI company introduction
+POST /api/company/technical-data      yfinance + pandas_ta + chart (no LLM)
+POST /api/company/technical-analysis  AI review of collected technical indicators
+POST /api/company/financial-data      OpenDART metrics (no LLM)
+POST /api/company/financial-analysis  AI review of collected financial metrics
+POST /api/company/risk-analysis       News-scoped AI risk analysis
+```
+
+All endpoints accept `company`, `research_id`, `provider`, `model`, and `force_refresh`. Technical and financial AI endpoints return `409` until their corresponding data endpoint has completed. Stable company stages are cached by ticker; risk analysis is cached by `research_id + ticker` because it depends on the source article.
+
 ### Financial calendar API
 
 The backend collects calendar facts from structured providers, stores normalized events in SQLite, and uses OpenAI only for importance and market-impact analysis. Collection does not use AI search.
