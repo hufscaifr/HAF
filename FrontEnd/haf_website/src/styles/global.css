@@ -6230,6 +6230,16 @@ a {
   gap: 10px;
   overflow: hidden;
   padding: 11px;
+  cursor: pointer;
+  transition: background 180ms ease, border-color 180ms ease, transform 180ms ease;
+}
+
+.financial-calendar__day:hover,
+.financial-calendar__day:focus-visible {
+  background: rgba(255, 255, 255, 0.58);
+  border-color: rgba(255, 255, 255, 0.94);
+  outline: none;
+  transform: translateY(-1px);
 }
 
 .financial-calendar__day.today {
@@ -6579,6 +6589,143 @@ a {
   backdrop-filter: blur(14px);
 }
 
+.financial-calendar__date-backdrop {
+  align-items: center;
+  background: rgba(245, 248, 251, 0.42);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 20px;
+  position: fixed;
+  z-index: 940;
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+
+.financial-calendar__date-popover {
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  border-radius: 8px;
+  box-shadow: 0 28px 88px rgba(53, 71, 87, 0.18);
+  max-height: min(680px, calc(100vh - 40px));
+  max-width: 580px;
+  overflow: auto;
+  padding: 24px;
+  width: min(580px, 100%);
+  -webkit-backdrop-filter: blur(28px);
+  backdrop-filter: blur(28px);
+}
+
+.financial-calendar__date-popover-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 20px;
+  justify-content: space-between;
+}
+
+.financial-calendar__date-popover-head > div > span {
+  color: rgba(29, 29, 31, 0.48);
+  display: block;
+  font-size: 11px;
+  font-weight: 800;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+}
+
+.financial-calendar__date-popover h2 {
+  color: #1d1d1f;
+  font-size: 24px;
+  line-height: 1.2;
+  margin: 0;
+}
+
+.financial-calendar__date-event-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 22px;
+}
+
+.financial-calendar__date-event {
+  appearance: none;
+  background: rgba(248, 250, 252, 0.82);
+  border: 1px solid rgba(29, 29, 31, 0.07);
+  border-left: 3px solid #38a169;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  font-family: inherit;
+  gap: 9px;
+  padding: 14px;
+  text-align: left;
+  transition: background 180ms ease, border-color 180ms ease, transform 180ms ease;
+  width: 100%;
+}
+
+.financial-calendar__date-event.high {
+  border-left-color: #ff6b35;
+}
+
+.financial-calendar__date-event.medium {
+  border-left-color: #2f80ed;
+}
+
+.financial-calendar__date-event:hover,
+.financial-calendar__date-event:focus-visible {
+  background: #ffffff;
+  border-top-color: rgba(29, 29, 31, 0.13);
+  border-right-color: rgba(29, 29, 31, 0.13);
+  border-bottom-color: rgba(29, 29, 31, 0.13);
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.financial-calendar__date-event-meta,
+.financial-calendar__date-event-consensus {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.financial-calendar__date-event-meta > span:not(.financial-calendar__event-badge) {
+  color: rgba(29, 29, 31, 0.5);
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.financial-calendar__date-event strong {
+  color: #1d1d1f;
+  font-size: 15px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.financial-calendar__date-event-consensus span {
+  background: rgba(232, 241, 248, 0.88);
+  border-radius: 6px;
+  color: rgba(29, 29, 31, 0.7);
+  font-size: 11px;
+  font-weight: 760;
+  padding: 5px 7px;
+}
+
+.financial-calendar__date-empty {
+  align-items: center;
+  background: rgba(248, 250, 252, 0.72);
+  border: 1px solid rgba(29, 29, 31, 0.06);
+  border-radius: 8px;
+  color: rgba(29, 29, 31, 0.52);
+  display: flex;
+  font-size: 14px;
+  justify-content: center;
+  margin-top: 22px;
+  min-height: 130px;
+  padding: 24px;
+  text-align: center;
+}
+
 .financial-calendar__quick-view {
   background: rgba(255, 255, 255, 0.72);
   border: 1px solid rgba(255, 255, 255, 0.84);
@@ -6845,6 +6992,16 @@ a {
   .financial-calendar__modal-backdrop {
     align-items: flex-start;
     padding: 12px;
+  }
+
+  .financial-calendar__date-backdrop {
+    align-items: flex-end;
+    padding: 10px;
+  }
+
+  .financial-calendar__date-popover {
+    max-height: calc(100vh - 20px);
+    padding: 18px;
   }
 
   .financial-calendar__modal {

@@ -6,6 +6,7 @@ function CalendarGrid({
   loading,
   onPrevMonth,
   onNextMonth,
+  onSelectDate,
   onSelectEvent,
 }) {
   const year = currentDate.getFullYear();
@@ -79,6 +80,10 @@ function CalendarGrid({
             }
 
             const dayEvents = getEventsForDay(dayNumber);
+            const dayString = `${year}-${String(month + 1).padStart(
+              2,
+              '0'
+            )}-${String(dayNumber).padStart(2, '0')}`;
             const now = new Date();
             const isToday =
               now.getFullYear() === year &&
@@ -89,6 +94,16 @@ function CalendarGrid({
               <div
                 key={`day-${dayNumber}`}
                 className={`financial-calendar__day ${isToday ? 'today' : ''}`}
+                onClick={() => onSelectDate(dayString, dayEvents)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    onSelectDate(dayString, dayEvents);
+                  }
+                }}
+                role="gridcell"
+                tabIndex={0}
+                aria-label={`${dayString}, 이벤트 ${dayEvents.length}개`}
               >
                 <div className="financial-calendar__day-head">
                   <span className="financial-calendar__day-number">
@@ -126,7 +141,10 @@ function EventCard({ event, onSelectEvent }) {
   return (
     <button
       className={`financial-calendar__event ${event.importance}`}
-      onClick={() => onSelectEvent(event)}
+      onClick={(clickEvent) => {
+        clickEvent.stopPropagation();
+        onSelectEvent(event);
+      }}
       type="button"
     >
       <div className="financial-calendar__event-top">

@@ -8,6 +8,7 @@ import {
 } from './financialCalendar/calendarData';
 import EventDetailModal from './financialCalendar/EventDetailModal';
 import EventQuickView from './financialCalendar/EventQuickView';
+import DateEventsPopover from './financialCalendar/DateEventsPopover';
 
 function FinancialCalendar() {
   const [events, setEvents] = useState([]);
@@ -18,6 +19,7 @@ function FinancialCalendar() {
   const [quickViewEvent, setQuickViewEvent] = useState(null);
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [detailTab, setDetailTab] = useState('detail');
+  const [selectedDate, setSelectedDate] = useState(null);
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
@@ -114,6 +116,15 @@ function FinancialCalendar() {
     setQuickViewEvent(null);
   };
 
+  const handleSelectDate = (date, dateEvents) => {
+    setSelectedDate({ date, events: dateEvents });
+  };
+
+  const handleSelectDateEvent = (event) => {
+    setSelectedDate(null);
+    setQuickViewEvent(event);
+  };
+
   const handleCloseDetail = () => {
     setSelectedEvent(null);
     setDetailTab('detail');
@@ -169,9 +180,17 @@ function FinancialCalendar() {
           loading={loading}
           onPrevMonth={handlePrevMonth}
           onNextMonth={handleNextMonth}
+          onSelectDate={handleSelectDate}
           onSelectEvent={setQuickViewEvent}
         />
       </div>
+
+      <DateEventsPopover
+        date={selectedDate?.date}
+        events={selectedDate?.events || []}
+        onClose={() => setSelectedDate(null)}
+        onSelectEvent={handleSelectDateEvent}
+      />
 
       <EventQuickView
         event={quickViewEvent}
