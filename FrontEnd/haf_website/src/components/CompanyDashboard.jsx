@@ -626,6 +626,9 @@ function CompanyAnalysisModal({
               ) : (
                 <AnalysisEmpty text="기술 데이터 불러오기를 누르면 차트와 지표가 표시됩니다." />
               )}
+              {dashboardData.technical_context && (
+                <TechnicalIndicatorGrid context={dashboardData.technical_context} />
+              )}
               {sortedHighlights.length > 0 && (
                 <div className="company-highlight-grid">
                   {sortedHighlights.map((item, index) => (
@@ -730,6 +733,120 @@ function CompanyAnalysisModal({
 
 function AnalysisEmpty({ text }) {
   return <div className="company-analysis-empty">{text}</div>;
+}
+
+function TechnicalIndicatorGrid({ context }) {
+  const indicators = context.latest_indicators || {};
+  const signals = context.signal_context || {};
+  const metrics = buildTechnicalMetrics(indicators, signals);
+
+  return (
+    <section className="company-indicators" aria-label="최신 기술적 지표">
+      <div className="company-indicators__head">
+        <div>
+          <span>Latest Indicators</span>
+          <h3>기술적 지표</h3>
+        </div>
+        {context.latest_date && <time>{context.latest_date}</time>}
+      </div>
+      <div className="company-indicators__grid">
+        {metrics.map((metric) => (
+          <div className="company-indicator" key={metric.label}>
+            <span>{metric.label}</span>
+            <strong>{metric.value}</strong>
+            <small className={metric.tone}>{metric.status}</small>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function buildTechnicalMetrics(indicators, signals) {
+  const rsi = indicators.rsi_14;
+  const adx = indicators.adx_14;
+  const stochK = indicators.stoch_k;
+  const return5 = indicators.return_5;
+  const macdPositive = indicators.macd >= indicators.macd_signal;
+
+  return [
+    metric('Close', formatIndicatorNumber(indicators.close), 'Latest', 'neutral'),
+    metric(
+      'SMA 20',
+      formatIndicatorNumber(indicators.sma_20),
+      signalLabel(signals.price_vs_sma20, 'Above', 'Below'),
+      comparisonTone(signals.price_vs_sma20)
+    ),
+    metric(
+      'SMA 50',
+      formatIndicatorNumber(indicators.sma_50),
+      signalLabel(signals.price_vs_sma50, 'Above', 'Below'),
+      comparisonTone(signals.price_vs_sma50)
+    ),
+    metric(
+      'RSI 14',
+      formatIndicatorNumber(rsi, 2),
+      rsi >= 70 ? 'Overbought' : rsi <= 30 ? 'Oversold' : 'Neutral',
+      rsi >= 70 || rsi <= 30 ? 'watch' : 'neutral'
+    ),
+    metric(
+      'MACD',
+      formatIndicatorNumber(indicators.macd, 2),
+      macdPositive ? 'Above signal' : 'Below signal',
+      macdPositive ? 'positive' : 'negative'
+    ),
+    metric('Signal', formatIndicatorNumber(indicators.macd_signal, 2), 'MACD 12·26·9', 'neutral'),
+    metric(
+      'ADX 14',
+      formatIndicatorNumber(adx, 2),
+      adx >= 25 ? 'Strong trend' : 'Range',
+      adx >= 25 ? 'positive' : 'neutral'
+    ),
+    metric('ATR 14', formatIndicatorNumber(indicators.atr_14, 2), 'Volatility', 'neutral'),
+    metric(
+      'Stochastic',
+      `${formatIndicatorNumber(stochK, 2)} / ${formatIndicatorNumber(indicators.stoch_d, 2)}`,
+      stochK >= 80 ? 'Overbought' : stochK <= 20 ? 'Oversold' : 'Neutral',
+      stochK >= 80 || stochK <= 20 ? 'watch' : 'neutral'
+    ),
+    metric(
+      '5D Return',
+      formatPercent(return5),
+      signals.bollinger_position || 'Bollinger neutral',
+      return5 > 0 ? 'positive' : return5 < 0 ? 'negative' : 'neutral'
+    ),
+  ];
+}
+
+function metric(label, value, status, tone) {
+  return { label, value, status, tone };
+}
+
+function formatIndicatorNumber(value, digits = 0) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '-';
+  return number.toLocaleString('ko-KR', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+}
+
+function formatPercent(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '-';
+  return `${number > 0 ? '+' : ''}${number.toFixed(2)}%`;
+}
+
+function comparisonTone(value) {
+  if (value === 'above') return 'positive';
+  if (value === 'below') return 'negative';
+  return 'neutral';
+}
+
+function signalLabel(value, positiveLabel, negativeLabel) {
+  if (value === 'above') return positiveLabel;
+  if (value === 'below') return negativeLabel;
+  return 'Neutral';
 }
 
 function HighlightCard({ item }) {

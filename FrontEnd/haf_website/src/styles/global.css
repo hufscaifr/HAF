@@ -6165,6 +6165,100 @@ a {
   width: 100%;
 }
 
+.company-indicators {
+  margin-top: 22px;
+}
+
+.company-indicators__head {
+  align-items: flex-end;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.company-indicators__head span {
+  color: rgba(29, 29, 31, 0.45);
+  display: block;
+  font-size: 10px;
+  font-weight: 800;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+
+.company-indicators__head h3 {
+  font-size: 19px;
+  letter-spacing: 0;
+  margin: 0;
+}
+
+.company-indicators__head time {
+  color: rgba(29, 29, 31, 0.45);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.company-indicators__grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.company-indicator {
+  background: rgba(246, 248, 250, 0.86);
+  border: 1px solid rgba(29, 29, 31, 0.06);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  min-height: 110px;
+  min-width: 0;
+  padding: 13px;
+}
+
+.company-indicator > span {
+  color: rgba(29, 29, 31, 0.48);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.company-indicator > strong {
+  color: #1d1d1f;
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  margin: 11px 0 9px;
+  overflow-wrap: anywhere;
+}
+
+.company-indicator > small {
+  align-self: flex-start;
+  border-radius: 5px;
+  font-size: 9px;
+  font-weight: 800;
+  margin-top: auto;
+  padding: 4px 6px;
+}
+
+.company-indicator > small.positive {
+  background: rgba(34, 139, 94, 0.1);
+  color: #197243;
+}
+
+.company-indicator > small.negative {
+  background: rgba(202, 70, 70, 0.1);
+  color: #a62b35;
+}
+
+.company-indicator > small.watch {
+  background: rgba(214, 143, 49, 0.13);
+  color: #8f5613;
+}
+
+.company-indicator > small.neutral {
+  background: rgba(29, 29, 31, 0.06);
+  color: rgba(29, 29, 31, 0.56);
+}
+
 .company-analysis-empty {
   align-items: center;
   background: rgba(246, 248, 250, 0.78);
@@ -6194,6 +6288,10 @@ a {
 
   .company-launch-button {
     min-height: 170px;
+  }
+
+  .company-indicators__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -6236,6 +6334,10 @@ a {
 
   .company-analysis-modal__header {
     padding: 18px;
+  }
+
+  .company-indicators__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
