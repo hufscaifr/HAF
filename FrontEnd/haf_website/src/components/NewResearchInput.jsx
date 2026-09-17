@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { API_HEADERS, apiUrl } from '../config/api';
+import { buildResearchResultPath } from '../utils/researchRoutes';
 
 function NewResearchInput() {
   const [newsUrl, setNewsUrl] = useState('');
@@ -53,8 +54,7 @@ function NewResearchInput() {
       clearCompanyDashboardCache();
       sessionStorage.setItem('researchData', JSON.stringify(result));
 
-      window.location.href =
-        '/equity_research/news_research/new_research_result';
+      window.location.href = buildResearchResultPath(result.research_id);
     } catch (error) {
       console.error('API 호출 실패:', error);
 

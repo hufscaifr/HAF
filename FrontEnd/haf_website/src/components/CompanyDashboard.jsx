@@ -1,5 +1,10 @@
 import React from 'react';
 import { API_HEADERS, apiUrl } from '../config/api';
+import {
+  buildResearchResultPath,
+  normalizeCompanyTicker,
+  parseResearchPath,
+} from '../utils/researchRoutes';
 
 export function CompanyDashboard() {
   const [dashboardData, setDashboardData] = React.useState(null);
@@ -7,100 +12,103 @@ export function CompanyDashboard() {
   const [researchContext, setResearchContext] = React.useState({});
   const [stageLoading, setStageLoading] = React.useState({});
   const [stageErrors, setStageErrors] = React.useState({});
-  const [activeTab, setActiveTab] = React.useState('추천 이유');
+  const [activePanel, setActivePanel] = React.useState(null);
   const [activeSubTab, setActiveSubTab] = React.useState('Trend');
 
   React.useEffect(() => {
-    const savedData = sessionStorage.getItem('selectedCompany');
-    const savedContext = sessionStorage.getItem('selectedResearchContext');
+    const controller = new AbortController();
+    const route = parseResearchPath();
 
-    if (savedData) {
+    const loadCompanyPage = async () => {
       let companySeed = null;
-      let savedResearchContext = {};
+      let context = {};
 
       try {
-        companySeed = JSON.parse(savedData);
-      } catch (error) {
-        console.error('데이터 파싱 에러:', error);
-        setLoading(false);
-        return;
+        const savedCompany = sessionStorage.getItem('selectedCompany');
+        const savedContext = sessionStorage.getItem('selectedResearchContext');
+        if (savedCompany) companySeed = JSON.parse(savedCompany);
+        if (savedContext) context = JSON.parse(savedContext);
+      } catch (parseError) {
+        console.error('저장된 기업 데이터 파싱 실패:', parseError);
+      }
+
+      const routeMatchesSession =
+        companySeed &&
+        (!route?.ticker || normalizeCompanyTicker(companySeed) === route.ticker) &&
+        (!route?.researchId || context.research_id === route.researchId);
+
+      if (!routeMatchesSession && route?.researchId && route?.ticker) {
+        try {
+          const response = await fetch(
+            apiUrl(`/api/new-research/${encodeURIComponent(route.researchId)}`),
+            { headers: { ...API_HEADERS, Accept: 'application/json' }, signal: controller.signal }
+          );
+          if (!response.ok) throw new Error(`분석 컨텍스트 조회 실패 (${response.status})`);
+          const research = await response.json();
+          companySeed = research.companies?.find(
+            (company) => normalizeCompanyTicker(company) === route.ticker
+          );
+          if (!companySeed) throw new Error('해당 분석에서 기업을 찾을 수 없습니다.');
+          context = {
+            research_id: research.research_id,
+            provider: research.provider,
+            model: research.model,
+            article: research.article,
+            selection: research.selection,
+          };
+          sessionStorage.setItem('researchData', JSON.stringify(research));
+          sessionStorage.setItem('selectedCompany', JSON.stringify(companySeed));
+          sessionStorage.setItem('selectedResearchContext', JSON.stringify(context));
+        } catch (resolveError) {
+          if (resolveError.name !== 'AbortError') {
+            setStageErrors({ profile: resolveError.message });
+          }
+          setLoading(false);
+          return;
+        }
       }
 
       if (!isPlainObject(companySeed) || !hasUsefulObjectData(companySeed)) {
-        console.error('선택된 기업 데이터가 비어 있습니다:', companySeed);
-        sessionStorage.removeItem('selectedCompany');
         setLoading(false);
         return;
       }
 
-      try {
-        savedResearchContext = savedContext ? JSON.parse(savedContext) : {};
-      } catch (error) {
-        console.error('분석 컨텍스트 파싱 에러:', error);
-      }
-
-      setResearchContext(savedResearchContext);
+      setResearchContext(context);
       setDashboardData(companySeed);
-      const controller = new AbortController();
-      const loadProfile = async () => {
-        try {
-          const response = await fetch(apiUrl('/api/company/profile'), {
-            method: 'POST',
-            headers: {
-              ...API_HEADERS,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              company: companySeed,
-              research_id: savedResearchContext.research_id || undefined,
-              provider: savedResearchContext.provider || 'openai',
-              model: savedResearchContext.model || undefined,
-            }),
-            signal: controller.signal,
-          });
 
-          if (!response.ok) {
-            let message = '기업 소개 응답 에러';
-
-            try {
-              const errorBody = await response.json();
-              message = formatApiErrorDetail(errorBody.detail) || message;
-            } catch {
-              message = `${message} (${response.status})`;
-            }
-
-            throw new Error(message);
-          }
-
-          const result = await response.json();
-          const detailedCompany = result.company || {};
-          if (!hasUsefulObjectData(detailedCompany)) {
-            throw new Error('기업 소개 응답이 비어 있습니다.');
-          }
-
-          const mergedCompany = mergeUsefulCompanyData(
-            companySeed,
-            detailedCompany
-          );
-
-          sessionStorage.setItem('selectedCompany', JSON.stringify(mergedCompany));
-          setDashboardData(mergedCompany);
-        } catch (error) {
-          if (error.name !== 'AbortError') {
-            console.error('기업 소개 호출 실패:', error);
-            setStageErrors({ profile: error.message });
-          }
-        } finally {
-          setLoading(false);
+      try {
+        const response = await fetch(apiUrl('/api/company/profile'), {
+          method: 'POST',
+          headers: { ...API_HEADERS, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            company: companySeed,
+            research_id: context.research_id || undefined,
+            provider: context.provider || 'openai',
+            model: context.model || undefined,
+          }),
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const errorBody = await response.json().catch(() => ({}));
+          throw new Error(formatApiErrorDetail(errorBody.detail) || `기업 소개 응답 에러 (${response.status})`);
         }
-      };
+        const result = await response.json();
+        const detailedCompany = result.company || {};
+        if (!hasUsefulObjectData(detailedCompany)) throw new Error('기업 소개 응답이 비어 있습니다.');
+        const mergedCompany = mergeUsefulCompanyData(companySeed, detailedCompany);
+        sessionStorage.setItem('selectedCompany', JSON.stringify(mergedCompany));
+        setDashboardData(mergedCompany);
+      } catch (profileError) {
+        if (profileError.name !== 'AbortError') {
+          setStageErrors({ profile: profileError.message });
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
 
-      loadProfile();
-
-      return () => controller.abort();
-    }
-
-    setLoading(false);
+    loadCompanyPage();
+    return () => controller.abort();
   }, []);
 
   const runStage = async (stage, endpoint, forceRefresh = false) => {
@@ -174,14 +182,6 @@ export function CompanyDashboard() {
     dashboardData.chart ||
     dashboardData.image_url;
 
-  const tabs = [
-    '추천 이유',
-    '의견',
-    '기술적 분석',
-    '리스크 요인',
-    '재무 분석',
-  ];
-
   const subTabs = [
     { id: 'Trend', label: 'Trend' },
     { id: 'Momentum', label: 'Momentum' },
@@ -224,13 +224,6 @@ export function CompanyDashboard() {
     fin.comment ||
     '';
 
-  const investmentOpinionText =
-    dashboardData.ai_opinion ||
-    dashboardData.technical_opinion ||
-    dashboardData.technical_analysis_text ||
-    dashboardData.ai_technical_analysis ||
-    '';
-
   const parsedSections = parseMarkdownSections(technicalReportText);
 
   const sortedHighlights = [...highlights].sort(
@@ -257,7 +250,13 @@ export function CompanyDashboard() {
           <button
             type="button"
             className="company-back-button"
-            onClick={() => window.history.back()}
+            onClick={() => {
+              if (researchContext.research_id) {
+                window.location.href = buildResearchResultPath(researchContext.research_id);
+              } else {
+                window.history.back();
+              }
+            }}
           >
             <span>←</span>
             추천 기업 리스트로 돌아가기
@@ -310,230 +309,75 @@ export function CompanyDashboard() {
           </div>
         </header>
 
-        <section className="company-chart-section">
-          <div className="company-section-head compact">
-            <div>
-              <div className="company-section-eyebrow">Price Trend</div>
-              <h2 className="company-section-title">Market Movement</h2>
+        <section className="company-overview">
+          <div className="company-overview__copy">
+            <span>News Relevance</span>
+            <p>{recommendationReason || '뉴스와 기업의 연결 근거를 준비 중입니다.'}</p>
+          </div>
+          {dashboardData.business_model && (
+            <div className="company-overview__copy">
+              <span>Business Model</span>
+              <p>{dashboardData.business_model}</p>
             </div>
-          </div>
-
-          <div className="company-chart-card">
-            {finalChartUrl ? (
-              <img
-                src={finalChartUrl}
-                alt={`${companyName} 주가 차트`}
-                className="company-chart-image"
-              />
-            ) : (
-              <div className="company-chart-empty">
-                <div className="company-chart-empty-icon">↗</div>
-                <p>차트 데이터를 불러오는 중이거나 존재하지 않습니다.</p>
-              </div>
-            )}
-          </div>
+          )}
         </section>
 
-        <section className="company-analysis-section">
-          <div className="company-section-head">
+        <section className="company-launchpad" aria-label="기업 분석 메뉴">
+          <div className="company-launchpad__head">
             <div>
-              <div className="company-section-eyebrow">AI Research</div>
-              <h2 className="company-section-title">Company Analysis</h2>
+              <span>Analysis Desk</span>
+              <h2>필요한 분석만 선택하세요.</h2>
             </div>
-
             {dashboardData.article_relevance && (
-              <div className="company-relevance-pill">
-                기사 관련성 · {dashboardData.article_relevance}
-              </div>
+              <p>{dashboardData.article_relevance}</p>
             )}
           </div>
 
-          <div className="company-main-tabs">
-            {tabs.map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                className={`company-main-tab ${activeTab === tab ? 'active' : ''}`}
-                onClick={() => setActiveTab(tab)}
-              >
-                {tab}
-              </button>
-            ))}
-          </div>
-
-          <div className="company-tab-content">
-            {activeTab === '추천 이유' && (
-              <div className="company-feature-card">
-                <div className="company-feature-label">AI Recommendation</div>
-                <p className="company-feature-text">
-                  {recommendationReason || '추천 이유 정보가 없습니다.'}
-                </p>
-              </div>
-            )}
-
-            {activeTab === '의견' && (
-              <div className="company-feature-card">
-                <div className="company-feature-label">Investment Opinion</div>
-                <p className="company-feature-text">
-                  {investmentOpinionText || '의견을 준비 중입니다.'}
-                </p>
-
-                {dashboardData.opinion_rationale && (
-                  <div className="company-secondary-note">
-                    {dashboardData.opinion_rationale}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {activeTab === '기술적 분석' && (
-              <div className="company-technical-layout">
-                <StageActions
-                  primaryLabel={dashboardData.technical_context ? '기술 데이터 새로고침' : '기술 데이터 불러오기'}
-                  primaryLoading={stageLoading.technicalData}
-                  onPrimary={() => runStage(
-                    'technicalData',
-                    '/api/company/technical-data',
-                    Boolean(dashboardData.technical_context)
-                  )}
-                  secondaryLabel="AI Analyze"
-                  secondaryLoading={stageLoading.technicalAi}
-                  secondaryDisabled={!dashboardData.technical_context}
-                  onSecondary={() => runStage('technicalAi', '/api/company/technical-analysis')}
-                  error={stageErrors.technicalData || stageErrors.technicalAi}
-                />
-                {sortedHighlights.length > 0 && (
-                  <div className="company-highlight-grid">
-                    {sortedHighlights.map((item, index) => (
-                      <HighlightCard key={`${item.title || 'highlight'}-${index}`} item={item} />
-                    ))}
-                  </div>
-                )}
-
-                <div className="company-technical-card">
-                  <div className="company-sub-tabs">
-                    {subTabs.map((sub) => {
-                      const hasContent =
-                        parsedSections[sub.id] && parsedSections[sub.id].length > 0;
-
-                      if (!hasContent && sub.id !== 'Overall') {
-                        return null;
-                      }
-
-                      return (
-                        <button
-                          key={sub.id}
-                          type="button"
-                          className={`company-sub-tab ${
-                            activeSubTab === sub.id ? 'active' : ''
-                          }`}
-                          onClick={() => setActiveSubTab(sub.id)}
-                        >
-                          {sub.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  <div className="company-technical-content">
-                    {parsedSections[activeSubTab] &&
-                    parsedSections[activeSubTab].length > 0 ? (
-                      parsedSections[activeSubTab].map((line, index) => (
-                        <p key={`${activeSubTab}-${index}`}>{line}</p>
-                      ))
-                    ) : (
-                      <div className="company-empty-text">
-                        선택한 {activeSubTab} 분석 데이터가 없습니다.
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {activeTab === '리스크 요인' && (
-              <div className="company-risk-layout">
-                <StageActions
-                  primaryLabel={deepRiskAnalysis ? '리스크 다시 분석' : '리스크 분석 시작'}
-                  primaryLoading={stageLoading.risk}
-                  onPrimary={() => runStage('risk', '/api/company/risk-analysis')}
-                  error={stageErrors.risk}
-                />
-                <div className="company-content-group">
-                  <div className="company-content-label">Key Risks</div>
-
-                  <div className="company-risk-list">
-                    {riskList.length > 0 ? (
-                      riskList.map((item, index) => (
-                        <div key={`${formatRiskItem(item)}-${index}`} className="company-risk-item">
-                          <div className="company-risk-dot" />
-                          <span>{formatRiskItem(item)}</span>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="company-empty-text">
-                        감지된 리스크가 없습니다.
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {deepRiskAnalysis && (
-                  <div className="company-content-group">
-                    <div className="company-content-label">Deep Risk Analysis</div>
-                    <MarkdownText text={deepRiskAnalysis} tone="risk" />
-                  </div>
-                )}
-              </div>
-            )}
-
-            {activeTab === '재무 분석' && (
-              <div className="company-financial-layout">
-                <StageActions
-                  primaryLabel={dashboardData.financial_context ? '재무 데이터 새로고침' : 'DART 재무 데이터 불러오기'}
-                  primaryLoading={stageLoading.financialData}
-                  onPrimary={() => runStage(
-                    'financialData',
-                    '/api/company/financial-data',
-                    Boolean(dashboardData.financial_context)
-                  )}
-                  secondaryLabel="AI Analyze"
-                  secondaryLoading={stageLoading.financialAi}
-                  secondaryDisabled={!dashboardData.financial_context}
-                  onSecondary={() => runStage('financialAi', '/api/company/financial-analysis')}
-                  error={stageErrors.financialData || stageErrors.financialAi}
-                />
-                <div className="company-financial-grid">
-                  <FinancialMetric label="PER" value={formatRatio(fin.per, 'x')} />
-                  <FinancialMetric label="PBR" value={formatRatio(fin.pbr, 'x')} />
-                  <FinancialMetric label="ROE" value={formatRatio(fin.roe, '%')} />
-                  <FinancialMetric label="EPS" value={formatNumber(fin.eps)} />
-                  <FinancialMetric label="BPS" value={formatNumber(fin.bps)} />
-                  <FinancialMetric
-                    label="Dividend Yield"
-                    value={formatRatio(
-                      fin.cash_dividend_yield ?? fin.dividend_yield,
-                      '%'
-                    )}
-                  />
-                </div>
-
-                <div className="company-content-group">
-                  <div className="company-content-label">Financial Analysis</div>
-
-                  {financialAnalysis ? (
-                    <MarkdownText text={financialAnalysis} tone="financial" />
-                  ) : (
-                    <div className="company-empty-text">
-                      재무 분석 세부 코멘트가 없습니다.
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
+          <div className="company-launchpad__grid">
+            <AnalysisLaunchButton
+              eyebrow="Market"
+              title="기술적 분석"
+              description="가격, 거래량과 기술 지표를 확인합니다."
+              status={dashboardData.technical_context ? 'Data ready' : 'Not loaded'}
+              onClick={() => setActivePanel('technical')}
+            />
+            <AnalysisLaunchButton
+              eyebrow="Fundamentals"
+              title="재무 분석"
+              description="DART 재무지표와 AI 의견을 확인합니다."
+              status={dashboardData.financial_context ? 'Data ready' : 'Not loaded'}
+              onClick={() => setActivePanel('financial')}
+            />
+            <AnalysisLaunchButton
+              eyebrow="Risk"
+              title="리스크 분석"
+              description="뉴스 투자 논리의 주요 위험을 검토합니다."
+              status={deepRiskAnalysis ? 'Analysis ready' : 'Not analyzed'}
+              onClick={() => setActivePanel('risk')}
+            />
           </div>
         </section>
       </div>
+
+      <CompanyAnalysisModal
+        panel={activePanel}
+        onClose={() => setActivePanel(null)}
+        companyName={companyName}
+        dashboardData={dashboardData}
+        finalChartUrl={finalChartUrl}
+        fin={fin}
+        financialAnalysis={financialAnalysis}
+        riskList={riskList}
+        deepRiskAnalysis={deepRiskAnalysis}
+        sortedHighlights={sortedHighlights}
+        parsedSections={parsedSections}
+        activeSubTab={activeSubTab}
+        setActiveSubTab={setActiveSubTab}
+        subTabs={subTabs}
+        stageLoading={stageLoading}
+        stageErrors={stageErrors}
+        runStage={runStage}
+      />
     </main>
   );
 }
@@ -701,6 +545,191 @@ function StageActions({
       {error && <p className="company-stage-error">{error}</p>}
     </div>
   );
+}
+
+function AnalysisLaunchButton({ eyebrow, title, description, status, onClick }) {
+  return (
+    <button className="company-launch-button" type="button" onClick={onClick}>
+      <span className="company-launch-button__eyebrow">{eyebrow}</span>
+      <strong>{title}</strong>
+      <p>{description}</p>
+      <span className="company-launch-button__footer">
+        <span>{status}</span>
+        <span aria-hidden="true">→</span>
+      </span>
+    </button>
+  );
+}
+
+function CompanyAnalysisModal({
+  panel, onClose, companyName, dashboardData, finalChartUrl, fin,
+  financialAnalysis, riskList, deepRiskAnalysis, sortedHighlights,
+  parsedSections, activeSubTab, setActiveSubTab, subTabs,
+  stageLoading, stageErrors, runStage,
+}) {
+  React.useEffect(() => {
+    if (!panel) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') onClose();
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [panel, onClose]);
+
+  if (!panel) return null;
+  const titles = {
+    technical: ['Technical Analysis', '가격 흐름과 기술 지표'],
+    financial: ['Financial Analysis', '재무지표와 기업가치'],
+    risk: ['Risk Analysis', '뉴스 투자 논리의 위험 요인'],
+  };
+  const [eyebrow, title] = titles[panel];
+
+  return (
+    <div className="company-analysis-modal__backdrop" onClick={onClose}>
+      <section
+        className="company-analysis-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="company-analysis-modal-title"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className="company-analysis-modal__header">
+          <div>
+            <span>{eyebrow} · {companyName}</span>
+            <h2 id="company-analysis-modal-title">{title}</h2>
+          </div>
+          <button type="button" onClick={onClose} aria-label="분석 창 닫기">×</button>
+        </header>
+
+        <div className="company-analysis-modal__body">
+          {panel === 'technical' && (
+            <>
+              <StageActions
+                primaryLabel={dashboardData.technical_context ? '기술 데이터 새로고침' : '기술 데이터 불러오기'}
+                primaryLoading={stageLoading.technicalData}
+                onPrimary={() => runStage('technicalData', '/api/company/technical-data', Boolean(dashboardData.technical_context))}
+                secondaryLabel="AI Analyze"
+                secondaryLoading={stageLoading.technicalAi}
+                secondaryDisabled={!dashboardData.technical_context}
+                onSecondary={() => runStage('technicalAi', '/api/company/technical-analysis')}
+                error={stageErrors.technicalData || stageErrors.technicalAi}
+              />
+              {finalChartUrl ? (
+                <div className="company-analysis-modal__chart">
+                  <img src={finalChartUrl} alt={`${companyName} 주가 차트`} />
+                </div>
+              ) : (
+                <AnalysisEmpty text="기술 데이터 불러오기를 누르면 차트와 지표가 표시됩니다." />
+              )}
+              {sortedHighlights.length > 0 && (
+                <div className="company-highlight-grid">
+                  {sortedHighlights.map((item, index) => (
+                    <HighlightCard key={`${item.title || 'highlight'}-${index}`} item={item} />
+                  ))}
+                </div>
+              )}
+              {dashboardData.technical_context && (
+                <div className="company-technical-card">
+                  <div className="company-sub-tabs">
+                    {subTabs.map((sub) => {
+                      const hasContent = parsedSections[sub.id]?.length > 0;
+                      if (!hasContent && sub.id !== 'Overall') return null;
+                      return (
+                        <button
+                          key={sub.id}
+                          type="button"
+                          className={`company-sub-tab ${activeSubTab === sub.id ? 'active' : ''}`}
+                          onClick={() => setActiveSubTab(sub.id)}
+                        >
+                          {sub.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="company-technical-content">
+                    {parsedSections[activeSubTab]?.length > 0 ? (
+                      parsedSections[activeSubTab].map((line, index) => (
+                        <p key={`${activeSubTab}-${index}`}>{line}</p>
+                      ))
+                    ) : (
+                      <div className="company-empty-text">AI Analyze를 누르면 지표 기반 의견이 표시됩니다.</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {panel === 'financial' && (
+            <>
+              <StageActions
+                primaryLabel={dashboardData.financial_context ? '재무 데이터 새로고침' : 'DART 재무 데이터 불러오기'}
+                primaryLoading={stageLoading.financialData}
+                onPrimary={() => runStage('financialData', '/api/company/financial-data', Boolean(dashboardData.financial_context))}
+                secondaryLabel="AI Analyze"
+                secondaryLoading={stageLoading.financialAi}
+                secondaryDisabled={!dashboardData.financial_context}
+                onSecondary={() => runStage('financialAi', '/api/company/financial-analysis')}
+                error={stageErrors.financialData || stageErrors.financialAi}
+              />
+              {dashboardData.financial_context ? (
+                <>
+                  <div className="company-financial-grid">
+                    <FinancialMetric label="PER" value={formatRatio(fin.per, 'x')} />
+                    <FinancialMetric label="PBR" value={formatRatio(fin.pbr, 'x')} />
+                    <FinancialMetric label="ROE" value={formatRatio(fin.roe, '%')} />
+                    <FinancialMetric label="EPS" value={formatNumber(fin.eps)} />
+                    <FinancialMetric label="BPS" value={formatNumber(fin.bps)} />
+                    <FinancialMetric label="Dividend Yield" value={formatRatio(fin.cash_dividend_yield ?? fin.dividend_yield, '%')} />
+                  </div>
+                  {financialAnalysis ? (
+                    <MarkdownText text={financialAnalysis} tone="financial" />
+                  ) : (
+                    <AnalysisEmpty text="AI Analyze를 누르면 재무지표 기반 의견이 표시됩니다." />
+                  )}
+                </>
+              ) : (
+                <AnalysisEmpty text="DART 재무 데이터 불러오기를 눌러 분석을 시작하세요." />
+              )}
+            </>
+          )}
+
+          {panel === 'risk' && (
+            <>
+              <StageActions
+                primaryLabel={deepRiskAnalysis ? '리스크 다시 분석' : '리스크 분석 시작'}
+                primaryLoading={stageLoading.risk}
+                onPrimary={() => runStage('risk', '/api/company/risk-analysis', Boolean(deepRiskAnalysis))}
+                error={stageErrors.risk}
+              />
+              {riskList.length > 0 ? (
+                <div className="company-risk-list">
+                  {riskList.map((item, index) => (
+                    <div key={`${formatRiskItem(item)}-${index}`} className="company-risk-item">
+                      <div className="company-risk-dot" />
+                      <span>{formatRiskItem(item)}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <AnalysisEmpty text="리스크 분석 시작을 누르면 주요 위험 요인이 표시됩니다." />
+              )}
+              {deepRiskAnalysis && <MarkdownText text={deepRiskAnalysis} tone="risk" />}
+            </>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AnalysisEmpty({ text }) {
+  return <div className="company-analysis-empty">{text}</div>;
 }
 
 function HighlightCard({ item }) {
