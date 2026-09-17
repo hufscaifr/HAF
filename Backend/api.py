@@ -590,6 +590,28 @@ def build_financial_metrics(fundamentals: dict) -> dict:
         "report_name": fundamentals.get("report_name"),
         "statement_date": fundamentals.get("statement_date"),
         "source": fundamentals.get("source"),
+        "revenue": round_decimal(metrics.get("revenue")),
+        "previous_revenue": round_decimal(metrics.get("previous_revenue")),
+        "revenue_yoy": round_decimal(metrics.get("revenue_yoy")),
+        "revenue_growth_status": metrics.get("revenue_growth_status"),
+        "operating_income": round_decimal(metrics.get("operating_income")),
+        "previous_operating_income": round_decimal(metrics.get("previous_operating_income")),
+        "operating_income_yoy": round_decimal(metrics.get("operating_income_yoy")),
+        "operating_income_growth_status": metrics.get("operating_income_growth_status"),
+        "net_income": round_decimal(metrics.get("net_income")),
+        "previous_net_income": round_decimal(metrics.get("previous_net_income")),
+        "net_income_yoy": round_decimal(metrics.get("net_income_yoy")),
+        "net_income_growth_status": metrics.get("net_income_growth_status"),
+        "ebitda": round_decimal(metrics.get("ebitda")),
+        "operating_cash_flow": round_decimal(
+            fundamentals.get("raw_indicator_values", {}).get("operating_cash_flow")
+        ),
+        "cash_and_equivalents": round_decimal(
+            fundamentals.get("raw_indicator_values", {}).get("cash_and_equivalents")
+        ),
+        "total_debt": round_decimal(
+            fundamentals.get("raw_indicator_values", {}).get("total_debt")
+        ),
     }
 
 
@@ -1742,8 +1764,8 @@ def build_stage_cache_key(
         kind=kind,
         research_id=payload.research_id if research_scoped else None,
         ticker=ticker,
-        provider=payload.provider if kind.endswith("analysis") or kind == "company_profile" else "data",
-        model=payload.model if kind.endswith("analysis") or kind == "company_profile" else None,
+        provider=payload.provider if "analysis" in kind or kind == "company_profile" else "data",
+        model=payload.model if "analysis" in kind or kind == "company_profile" else None,
     )
 
 
@@ -1910,7 +1932,7 @@ def get_company_financial_data(payload: CompanyStageRequest) -> dict:
     company = normalize_dashboard_company(payload.company)
     company["latest_close"] = payload.company.get("latest_close")
     ticker = company["ticker"]
-    cache_key = build_stage_cache_key("financial_data", payload, ticker)
+    cache_key = build_stage_cache_key("financial_data_v2", payload, ticker)
     if not payload.force_refresh:
         cached = get_cached_company_analysis(cache_key)
         if cached:
@@ -1924,14 +1946,14 @@ def get_company_financial_data(payload: CompanyStageRequest) -> dict:
         "financial_error": item.get("error"),
     })
     result = {"status": "success", "company": display_company, "source": "OpenDART"}
-    return save_stage_result(cache_key, payload, ticker, "financial_data", result)
+    return save_stage_result(cache_key, payload, ticker, "financial_data_v2", result)
 
 
 @app.post("/api/company/financial-analysis")
 def get_company_financial_ai_analysis(payload: CompanyStageRequest) -> dict:
     company = normalize_dashboard_company(payload.company)
     ticker = company["ticker"]
-    cache_key = build_stage_cache_key("financial_analysis", payload, ticker)
+    cache_key = build_stage_cache_key("financial_analysis_v2", payload, ticker)
     if not payload.force_refresh:
         cached = get_cached_company_analysis(cache_key)
         if cached:
@@ -1946,7 +1968,7 @@ def get_company_financial_ai_analysis(payload: CompanyStageRequest) -> dict:
         "status": "success",
         "company": {**payload.company, "financial_analysis": analyses.get(ticker, "")},
     }
-    return save_stage_result(cache_key, payload, ticker, "financial_analysis", result)
+    return save_stage_result(cache_key, payload, ticker, "financial_analysis_v2", result)
 
 
 @app.post("/api/company/risk-analysis")

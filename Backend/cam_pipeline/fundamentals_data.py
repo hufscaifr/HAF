@@ -414,6 +414,27 @@ def build_valuation_metrics(
         ),
         account_names=("지배기업 소유지분", "당기순이익", "당기순이익(손실)"),
     )
+    previous_revenue = extract_previous_account_value(
+        statement_records,
+        subject_divisions=("IS", "CIS"),
+        account_ids=("ifrs-full_Revenue",),
+        account_names=("매출액", "영업수익"),
+    )
+    previous_operating_income = extract_previous_account_value(
+        statement_records,
+        subject_divisions=("IS", "CIS"),
+        account_ids=("dart_OperatingIncomeLoss",),
+        account_names=("영업이익",),
+    )
+    previous_net_income_common = extract_previous_account_value(
+        statement_records,
+        subject_divisions=("IS", "CIS"),
+        account_ids=(
+            "ifrs-full_ProfitLossAttributableToOwnersOfParent",
+            "ifrs-full_ProfitLoss",
+        ),
+        account_names=("지배기업 소유지분", "당기순이익", "당기순이익(손실)"),
+    )
     common_stock_equity, common_stock_equity_date, common_stock_equity_source = extract_account_value(
         statement_records,
         subject_divisions=("BS",),
@@ -483,6 +504,15 @@ def build_valuation_metrics(
         ratio_lookup.get(normalize_label("순이익률")),
         safe_divide(net_income_common, revenue, multiplier=100.0),
     )
+    revenue_growth = calculate_period_growth(revenue, previous_revenue)
+    operating_income_growth = calculate_period_growth(
+        operating_income,
+        previous_operating_income,
+    )
+    net_income_growth = calculate_period_growth(
+        net_income_common,
+        previous_net_income_common,
+    )
 
     valuation_metrics = {
         "eps": eps,
@@ -504,6 +534,18 @@ def build_valuation_metrics(
         "market_cap": market_cap,
         "enterprise_value": enterprise_value,
         "shares_outstanding": shares_outstanding,
+        "revenue": revenue,
+        "previous_revenue": previous_revenue,
+        "revenue_yoy": revenue_growth["rate"],
+        "revenue_growth_status": revenue_growth["status"],
+        "operating_income": operating_income,
+        "previous_operating_income": previous_operating_income,
+        "operating_income_yoy": operating_income_growth["rate"],
+        "operating_income_growth_status": operating_income_growth["status"],
+        "net_income": net_income_common,
+        "previous_net_income": previous_net_income_common,
+        "net_income_yoy": net_income_growth["rate"],
+        "net_income_growth_status": net_income_growth["status"],
     }
 
     raw_indicator_values = {
@@ -516,12 +558,15 @@ def build_valuation_metrics(
         "revenue": revenue,
         "revenue_source": revenue_source,
         "revenue_statement_date": revenue_date,
+        "previous_revenue": previous_revenue,
         "operating_income": operating_income,
         "operating_income_source": operating_income_source,
         "operating_income_statement_date": operating_income_date,
+        "previous_operating_income": previous_operating_income,
         "net_income_common": net_income_common,
         "net_income_common_source": net_income_source,
         "net_income_common_statement_date": net_income_date,
+        "previous_net_income_common": previous_net_income_common,
         "common_stock_equity": common_stock_equity,
         "common_stock_equity_source": common_stock_equity_source,
         "common_stock_equity_statement_date": common_stock_equity_date,
@@ -682,22 +727,83 @@ def extract_account_value(
     return None, None, None
 
 
+def extract_previous_account_value(
+    statement_records: list[dict[str, Any]],
+    subject_divisions: tuple[str, ...],
+    account_ids: tuple[str, ...] = (),
+    account_names: tuple[str, ...] = (),
+) -> Optional[float]:
+    filtered = [
+        record
+        for record in statement_records
+        if not subject_divisions or record["sj_div"] in subject_divisions
+    ]
+    normalized_ids = {normalize_label(value) for value in account_ids}
+    normalized_names = {normalize_label(value) for value in account_names}
+    for record in filtered:
+        if record["account_id_normalized"] in normalized_ids:
+            return to_float(record.get("previous_amount"))
+    for record in filtered:
+        if record["account_name_normalized"] in normalized_names:
+            return to_float(record.get("previous_amount"))
+    return None
+
+
+def calculate_period_growth(
+    current: Optional[float],
+    previous: Optional[float],
+) -> dict[str, Any]:
+    if current is None or previous is None:
+        return {"rate": None, "status": "unavailable"}
+    if previous < 0 <= current:
+        return {"rate": None, "status": "turnaround_profit"}
+    if previous >= 0 > current:
+        return {"rate": None, "status": "turnaround_loss"}
+    if previous < 0 and current < 0:
+        rate = safe_divide(current - previous, abs(previous), multiplier=100.0)
+        return {
+            "rate": rate,
+            "status": "loss_narrowed" if current > previous else "loss_widened",
+        }
+    if previous == 0:
+        return {"rate": None, "status": "unavailable"}
+    rate = safe_divide(current - previous, abs(previous), multiplier=100.0)
+    if rate is None or abs(rate) < 0.005:
+        status = "flat"
+    else:
+        status = "increase" if rate > 0 else "decrease"
+    return {"rate": rate, "status": status}
+
+
 def normalize_statement_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for order, record in enumerate(records):
         account_name = str(record.get("account_nm", "")).strip()
         account_id = str(record.get("account_id", "")).strip()
-        amount = to_float(record.get("thstrm_amount"))
+        subject_division = str(record.get("sj_div", "")).strip()
+        is_flow_statement = subject_division in {"IS", "CIS", "CF"}
+        amount = to_float(
+            record.get("thstrm_add_amount") if is_flow_statement else None
+        )
+        if amount is None:
+            amount = to_float(record.get("thstrm_amount"))
+        previous_amount = to_float(
+            record.get("frmtrm_add_amount") if is_flow_statement else None
+        )
+        if previous_amount is None:
+            previous_amount = to_float(record.get("frmtrm_amount"))
         normalized.append(
             {
                 "order": order,
-                "sj_div": str(record.get("sj_div", "")).strip(),
+                "sj_div": subject_division,
                 "account_nm": account_name,
                 "account_id": account_id,
                 "account_name_normalized": normalize_label(account_name),
                 "account_id_normalized": normalize_label(account_id),
                 "amount": amount,
+                "previous_amount": previous_amount,
                 "statement_date": normalize_statement_date(record.get("thstrm_dt")),
+                "previous_statement_date": normalize_statement_date(record.get("frmtrm_dt")),
                 "source": account_id or account_name or None,
             }
         )

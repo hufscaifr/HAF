@@ -681,21 +681,7 @@ function CompanyAnalysisModal({
                 error={stageErrors.financialData || stageErrors.financialAi}
               />
               {dashboardData.financial_context ? (
-                <>
-                  <div className="company-financial-grid">
-                    <FinancialMetric label="PER" value={formatRatio(fin.per, 'x')} />
-                    <FinancialMetric label="PBR" value={formatRatio(fin.pbr, 'x')} />
-                    <FinancialMetric label="ROE" value={formatRatio(fin.roe, '%')} />
-                    <FinancialMetric label="EPS" value={formatNumber(fin.eps)} />
-                    <FinancialMetric label="BPS" value={formatNumber(fin.bps)} />
-                    <FinancialMetric label="Dividend Yield" value={formatRatio(fin.cash_dividend_yield ?? fin.dividend_yield, '%')} />
-                  </div>
-                  {financialAnalysis ? (
-                    <MarkdownText text={financialAnalysis} tone="financial" />
-                  ) : (
-                    <AnalysisEmpty text="AI Analyze를 누르면 재무지표 기반 의견이 표시됩니다." />
-                  )}
-                </>
+                <FinancialDashboard fin={fin} financialAnalysis={financialAnalysis} />
               ) : (
                 <AnalysisEmpty text="DART 재무 데이터 불러오기를 눌러 분석을 시작하세요." />
               )}
@@ -878,6 +864,109 @@ function HighlightCard({ item }) {
       <p>{item.detail}</p>
     </article>
   );
+}
+
+function FinancialDashboard({ fin, financialAnalysis }) {
+  const performance = [
+    financialPerformance('매출액', fin.revenue, fin.revenue_yoy, fin.revenue_growth_status),
+    financialPerformance('영업이익', fin.operating_income, fin.operating_income_yoy, fin.operating_income_growth_status),
+    financialPerformance('순이익', fin.net_income, fin.net_income_yoy, fin.net_income_growth_status),
+  ];
+
+  return (
+    <div className="company-financial-dashboard">
+      <FinancialSectionHeader
+        eyebrow="Performance"
+        title="실적"
+        meta={fin.report_name || fin.statement_date}
+      />
+      <div className="company-financial-performance">
+        {performance.map((item) => (
+          <div className="company-performance-metric" key={item.label}>
+            <span>{item.label}</span>
+            <strong>{formatCompactKrw(item.value)}</strong>
+            <small className={item.tone}>{item.change}</small>
+          </div>
+        ))}
+      </div>
+
+      <FinancialSectionHeader eyebrow="Fundamentals" title="펀더멘털" />
+      <div className="company-financial-grid fundamentals">
+        <FinancialMetric label="영업이익률" value={formatRatio(fin.operating_margin, '%')} />
+        <FinancialMetric label="순이익률" value={formatRatio(fin.net_margin, '%')} />
+        <FinancialMetric label="ROE" value={formatRatio(fin.roe, '%')} />
+        <FinancialMetric label="부채비율" value={formatRatio(fin.debt_ratio, '%')} />
+        <FinancialMetric label="유동비율" value={formatRatio(fin.current_ratio, '%')} />
+        <FinancialMetric label="영업현금흐름" value={formatCompactKrw(fin.operating_cash_flow)} />
+        <FinancialMetric label="현금성자산" value={formatCompactKrw(fin.cash_and_equivalents)} />
+        <FinancialMetric label="총차입금" value={formatCompactKrw(fin.total_debt)} />
+      </div>
+
+      <FinancialSectionHeader eyebrow="Valuation" title="밸류에이션" />
+      <div className="company-financial-grid valuation">
+        <FinancialMetric label="PER" value={formatRatio(fin.per, 'x')} />
+        <FinancialMetric label="PBR" value={formatRatio(fin.pbr, 'x')} />
+        <FinancialMetric label="EV / EBITDA" value={formatRatio(fin.ev_to_ebitda, 'x')} />
+        <FinancialMetric label="EPS" value={formatNumber(fin.eps)} />
+        <FinancialMetric label="BPS" value={formatNumber(fin.bps)} />
+        <FinancialMetric label="배당수익률" value={formatRatio(fin.cash_dividend_yield ?? fin.dividend_yield, '%')} />
+      </div>
+
+      <FinancialSectionHeader eyebrow="AI Review" title="재무 분석 의견" />
+      {financialAnalysis ? (
+        <MarkdownText text={financialAnalysis} tone="financial" />
+      ) : (
+        <AnalysisEmpty text="AI Analyze를 누르면 실적과 펀더멘털 기반 의견이 표시됩니다." />
+      )}
+    </div>
+  );
+}
+
+function FinancialSectionHeader({ eyebrow, title, meta }) {
+  return (
+    <div className="company-financial-section-head">
+      <div>
+        <span>{eyebrow}</span>
+        <h3>{title}</h3>
+      </div>
+      {meta && <small>{meta}</small>}
+    </div>
+  );
+}
+
+function financialPerformance(label, value, rate, status) {
+  const statusMap = {
+    turnaround_profit: ['흑자전환', 'positive'],
+    turnaround_loss: ['적자전환', 'negative'],
+    loss_narrowed: ['적자 축소', 'positive'],
+    loss_widened: ['적자 확대', 'negative'],
+    flat: ['전년 수준', 'neutral'],
+    unavailable: ['비교 데이터 없음', 'neutral'],
+  };
+  if (statusMap[status]) {
+    return { label, value, change: statusMap[status][0], tone: statusMap[status][1] };
+  }
+  const numericRate = Number(rate);
+  if (!Number.isFinite(numericRate)) {
+    return { label, value, change: '비교 데이터 없음', tone: 'neutral' };
+  }
+  return {
+    label,
+    value,
+    change: `YoY ${numericRate > 0 ? '+' : ''}${numericRate.toFixed(1)}%`,
+    tone: numericRate > 0 ? 'positive' : numericRate < 0 ? 'negative' : 'neutral',
+  };
+}
+
+function formatCompactKrw(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '-';
+  const absolute = Math.abs(number);
+  const sign = number < 0 ? '-' : '';
+  if (absolute >= 1_000_000_000_000) return `${sign}${(absolute / 1_000_000_000_000).toFixed(1)}조`;
+  if (absolute >= 100_000_000) return `${sign}${(absolute / 100_000_000).toFixed(0)}억`;
+  if (absolute >= 10_000) return `${sign}${(absolute / 10_000).toFixed(0)}만`;
+  return number.toLocaleString('ko-KR');
 }
 
 function FinancialMetric({ label, value }) {

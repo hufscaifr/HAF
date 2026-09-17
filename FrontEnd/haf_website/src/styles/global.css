@@ -6259,6 +6259,124 @@ a {
   color: rgba(29, 29, 31, 0.56);
 }
 
+.company-financial-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.company-financial-section-head {
+  align-items: flex-end;
+  display: flex;
+  justify-content: space-between;
+  margin-top: 18px;
+}
+
+.company-financial-section-head:first-child {
+  margin-top: 0;
+}
+
+.company-financial-section-head span {
+  color: rgba(29, 29, 31, 0.46);
+  display: block;
+  font-size: 9px;
+  font-weight: 800;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+
+.company-financial-section-head h3 {
+  font-size: 19px;
+  letter-spacing: 0;
+  margin: 0;
+}
+
+.company-financial-section-head small {
+  color: rgba(29, 29, 31, 0.44);
+  font-size: 11px;
+}
+
+.company-financial-performance {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.company-performance-metric {
+  background: rgba(246, 248, 250, 0.9);
+  border: 1px solid rgba(29, 29, 31, 0.06);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  min-height: 132px;
+  padding: 16px;
+}
+
+.company-performance-metric > span {
+  color: rgba(29, 29, 31, 0.48);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.company-performance-metric > strong {
+  color: #1d1d1f;
+  font-size: 23px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  margin: 18px 0 12px;
+}
+
+.company-performance-metric > small {
+  align-self: flex-start;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 800;
+  margin-top: auto;
+  padding: 5px 7px;
+}
+
+.company-performance-metric > small.positive {
+  background: rgba(34, 139, 94, 0.1);
+  color: #197243;
+}
+
+.company-performance-metric > small.negative {
+  background: rgba(202, 70, 70, 0.1);
+  color: #a62b35;
+}
+
+.company-performance-metric > small.neutral {
+  background: rgba(29, 29, 31, 0.06);
+  color: rgba(29, 29, 31, 0.55);
+}
+
+.company-analysis-modal .company-financial-grid {
+  gap: 8px;
+  margin-top: 0;
+}
+
+.company-analysis-modal .company-financial-grid.fundamentals {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.company-analysis-modal .company-financial-grid.valuation {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.company-analysis-modal .company-financial-metric {
+  background: rgba(246, 248, 250, 0.8);
+  border-radius: 8px;
+  min-height: 96px;
+  padding: 14px;
+}
+
+.company-analysis-modal .company-financial-value {
+  font-size: 18px;
+  letter-spacing: 0;
+  margin-top: 14px;
+  overflow-wrap: anywhere;
+}
+
 .company-analysis-empty {
   align-items: center;
   background: rgba(246, 248, 250, 0.78);
@@ -6291,6 +6409,11 @@ a {
   }
 
   .company-indicators__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .company-analysis-modal .company-financial-grid.fundamentals,
+  .company-analysis-modal .company-financial-grid.valuation {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -6338,6 +6461,10 @@ a {
 
   .company-indicators__grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .company-financial-performance {
+    grid-template-columns: 1fr;
   }
 }
 
