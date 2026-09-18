@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hmac
 import json
 import logging
 import os
@@ -9,7 +10,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 import requests
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -67,6 +68,7 @@ from cam_pipeline.research_cache import (
     save_company_analysis,
     save_research,
 )
+from cam_pipeline.reports import get_report_by_id, list_reports, save_report
 
 
 FRAMER_ORIGIN = "https://ambiguous-replacement-035632.framer.app"
@@ -168,6 +170,27 @@ class KrxListingsRefreshRequest(BaseModel):
     )
 
 
+class ReportIngestRequest(BaseModel):
+    Title: str = Field(..., min_length=1, max_length=10)
+    subtitle: str = Field(..., min_length=1, max_length=100)
+    paragraph_title: str = Field(..., min_length=1, max_length=200)
+    summary: str = Field(..., min_length=1, max_length=5000)
+    generate_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    author: Literal["제갈민찬"]
+    company1_name: str = Field(..., min_length=1, max_length=100)
+    company1_ticker: str = Field(..., pattern=r"^\d{6}$")
+    company1_opinion_summary: str = Field(..., min_length=1, max_length=1000)
+    company1_ta_summary: str = Field(..., min_length=1, max_length=1000)
+    company2_name: str = Field(..., min_length=1, max_length=100)
+    company2_ticker: str = Field(..., pattern=r"^\d{6}$")
+    company2_opinion_summary: str = Field(..., min_length=1, max_length=1000)
+    company2_ta_summary: str = Field(..., min_length=1, max_length=1000)
+    company3_name: str = Field(..., min_length=1, max_length=100)
+    company3_ticker: str = Field(..., pattern=r"^\d{6}$")
+    company3_opinion_summary: str = Field(..., min_length=1, max_length=1000)
+    company3_ta_summary: str = Field(..., min_length=1, max_length=1000)
+
+
 app = FastAPI(
     title="CAM Backend API",
     description="HTTP API for crawling a news URL and selecting meaningful Korean listed companies.",
@@ -204,6 +227,72 @@ app.add_middleware(PrivateNetworkAccessMiddleware)
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+def require_reports_api_token(authorization: Optional[str]) -> None:
+    configured_token = os.getenv("REPORTS_API_TOKEN", "").strip()
+    if not configured_token:
+        raise HTTPException(
+            status_code=503,
+            detail="REPORTS_API_TOKEN is not configured.",
+        )
+
+    scheme, separator, supplied_token = (authorization or "").partition(" ")
+    if (
+        not separator
+        or scheme.lower() != "bearer"
+        or not hmac.compare_digest(supplied_token.strip(), configured_token)
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing bearer token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+@app.post("/api/reports", status_code=201)
+def create_report(
+    payload: ReportIngestRequest,
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    require_reports_api_token(authorization)
+    try:
+        report, created = save_report(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "status": "success",
+        "created": created,
+        "report_id": report["id"],
+    }
+
+
+@app.get("/api/reports")
+def get_reports(
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, Any]:
+    if not 1 <= limit <= 100:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 100.")
+    if offset < 0:
+        raise HTTPException(status_code=422, detail="offset must be greater than or equal to 0.")
+    reports, total = list_reports(limit=limit, offset=offset)
+    return {
+        "status": "success",
+        "reports": reports,
+        "count": len(reports),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.get("/api/reports/{report_id}")
+def get_report(report_id: str) -> dict[str, Any]:
+    report = get_report_by_id(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    return {"status": "success", "report": report}
 
 
 @app.get("/api/financial-calendar")

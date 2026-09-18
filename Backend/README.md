@@ -72,6 +72,48 @@ The API crawls the article, sends the article text to the configured AI provider
 - `summary`
 - `companies`
 
+## Report ingestion API
+
+Generated reports can be stored through the authenticated endpoint below. The exact
+same payload is idempotent and returns the existing `report_id` instead of creating
+a duplicate row.
+
+```http
+POST /api/reports
+Content-Type: application/json
+Authorization: Bearer <REPORTS_API_TOKEN>
+```
+
+The request body uses `Title`, `subtitle`, `paragraph_title`, `summary`,
+`generate_date`, `author`, and the fixed `company1` through `company3` fields.
+`author` must be `제갈민찬`, each ticker must contain six digits, and
+`generate_date` must use `YYYY-MM-DD`.
+
+Successful response:
+
+```json
+{
+  "status": "success",
+  "created": true,
+  "report_id": "07c676bd-7348-4394-a70e-438921d215eb"
+}
+```
+
+Report view endpoints:
+
+```http
+GET /api/reports?limit=20&offset=0
+GET /api/reports/{report_id}
+```
+
+Configuration:
+
+- `REPORTS_API_TOKEN`: bearer token accepted by `POST /api/reports`.
+- `CAM_REPORTS_DB`: optional SQLite path; defaults to `Backend/reports.db`.
+
+Generate a deployment token with `openssl rand -hex 32`. The report tables are
+created automatically on the first request.
+
 If the frontend only needs the AI-recommended company cards, use:
 
 ```http
