@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import uuid
 from datetime import date, datetime, timezone
@@ -12,6 +13,7 @@ from typing import Any, Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPORTS_DB_PATH = PROJECT_ROOT / "reports.db"
+DEFAULT_REPORT_PDF_MAX_BYTES = 25 * 1024 * 1024
 
 
 def get_reports_db_path() -> Path:
@@ -49,6 +51,7 @@ def init_reports_db(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    ensure_report_upload_columns(conn)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS report_companies (
@@ -76,6 +79,116 @@ def init_reports_db(conn: sqlite3.Connection) -> None:
         """
     )
     conn.commit()
+
+
+def ensure_report_upload_columns(conn: sqlite3.Connection) -> None:
+    existing_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(reports)").fetchall()
+    }
+    upload_columns = {
+        "report_date": "TEXT",
+        "category": "TEXT",
+        "company": "TEXT",
+        "s3_key": "TEXT",
+        "original_filename": "TEXT",
+        "content_type": "TEXT",
+        "file_size": "INTEGER",
+    }
+    for column_name, column_type in upload_columns.items():
+        if column_name not in existing_columns:
+            conn.execute(
+                f"ALTER TABLE reports ADD COLUMN {column_name} {column_type}"
+            )
+
+
+def save_uploaded_report(
+    *,
+    title: str,
+    report_date: str,
+    category: str,
+    company: Optional[str],
+    s3_key: str,
+    original_filename: str,
+    content_type: str,
+    file_size: int,
+) -> dict[str, Any]:
+    normalized_date = normalize_date(report_date)
+    now = utc_now()
+    report_id = str(uuid.uuid4())
+    ingestion_key = hashlib.sha256(s3_key.encode("utf-8")).hexdigest()
+
+    with connect_reports_db() as conn:
+        init_reports_db(conn)
+        conn.execute(
+            """
+            INSERT INTO reports (
+                report_id, ingestion_key, title, subtitle, paragraph_title,
+                summary, generate_date, author, report_date, category, company,
+                s3_key, original_filename, content_type, file_size,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, '', '', '', ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                report_id,
+                ingestion_key,
+                title.strip(),
+                normalized_date,
+                normalized_date,
+                category.strip(),
+                company.strip() if company else None,
+                s3_key,
+                original_filename,
+                content_type,
+                file_size,
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+        report = get_report_by_id(report_id, conn=conn)
+    if not report:
+        raise RuntimeError("The uploaded report was not found after saving.")
+    return report
+
+
+def get_report_s3_settings() -> tuple[str, str]:
+    region = os.getenv("AWS_REGION", "").strip()
+    bucket = os.getenv("AWS_S3_BUCKET", "").strip()
+    if not region:
+        raise RuntimeError("AWS_REGION is not configured.")
+    if not bucket:
+        raise RuntimeError("AWS_S3_BUCKET is not configured.")
+    return region, bucket
+
+
+def get_report_pdf_max_bytes() -> int:
+    configured = os.getenv("REPORT_PDF_MAX_BYTES", "").strip()
+    if not configured:
+        return DEFAULT_REPORT_PDF_MAX_BYTES
+    try:
+        value = int(configured)
+    except ValueError as exc:
+        raise RuntimeError("REPORT_PDF_MAX_BYTES must be an integer.") from exc
+    if value <= 0:
+        raise RuntimeError("REPORT_PDF_MAX_BYTES must be greater than zero.")
+    return value
+
+
+def build_report_s3_key(report_date: str, filename: str) -> str:
+    normalized_date = normalize_date(report_date)
+    safe_name = sanitize_pdf_filename(filename)
+    year, month, _ = normalized_date.split("-")
+    return f"reports/{year}/{month}/{uuid.uuid4().hex}-{safe_name}"
+
+
+def sanitize_pdf_filename(filename: str) -> str:
+    basename = Path(filename or "report.pdf").name
+    stem = re.sub(r"[^\w.-]+", "-", basename, flags=re.UNICODE).strip("-.")
+    if not stem:
+        stem = "report.pdf"
+    if not stem.lower().endswith(".pdf"):
+        stem = f"{stem}.pdf"
+    return stem[:180]
 
 
 def save_report(payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
@@ -165,7 +278,9 @@ def get_report_by_id(
         row = connection.execute(
             """
             SELECT report_id, title, subtitle, paragraph_title, summary,
-                   generate_date, author, created_at, updated_at
+                   generate_date, author, report_date, category, company,
+                   s3_key, original_filename, content_type, file_size,
+                   created_at, updated_at
             FROM reports
             WHERE report_id = ?
             """,
@@ -234,6 +349,13 @@ def serialize_report(
         "summary": report_row["summary"],
         "generate_date": report_row["generate_date"],
         "author": report_row["author"],
+        "report_date": report_row["report_date"] or report_row["generate_date"],
+        "category": report_row["category"],
+        "company": report_row["company"],
+        "s3_key": report_row["s3_key"],
+        "original_filename": report_row["original_filename"],
+        "content_type": report_row["content_type"],
+        "file_size": report_row["file_size"],
         "companies": companies,
         "created_at": report_row["created_at"],
         "updated_at": report_row["updated_at"],

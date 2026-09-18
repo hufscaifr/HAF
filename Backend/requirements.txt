@@ -10,3 +10,5 @@ finance-datareader>=0.9.96
 python-dotenv>=1.0.0
 pandas-ta-classic>=0.3.0
 matplotlib>=3.8.0
+boto3>=1.35.0
+python-multipart>=0.0.9

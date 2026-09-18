@@ -9,8 +9,9 @@ import time
 from pathlib import Path
 from typing import Any, Literal, Optional
 
+import boto3
 import requests
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -68,7 +69,14 @@ from cam_pipeline.research_cache import (
     save_company_analysis,
     save_research,
 )
-from cam_pipeline.reports import get_report_by_id, list_reports, save_report
+from cam_pipeline.reports import (
+    build_report_s3_key,
+    get_report_by_id,
+    get_report_pdf_max_bytes,
+    get_report_s3_settings,
+    list_reports,
+    save_uploaded_report,
+)
 
 
 FRAMER_ORIGIN = "https://ambiguous-replacement-035632.framer.app"
@@ -170,27 +178,6 @@ class KrxListingsRefreshRequest(BaseModel):
     )
 
 
-class ReportIngestRequest(BaseModel):
-    Title: str = Field(..., min_length=1, max_length=10)
-    subtitle: str = Field(..., min_length=1, max_length=100)
-    paragraph_title: str = Field(..., min_length=1, max_length=200)
-    summary: str = Field(..., min_length=1, max_length=5000)
-    generate_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
-    author: Literal["제갈민찬"]
-    company1_name: str = Field(..., min_length=1, max_length=100)
-    company1_ticker: str = Field(..., pattern=r"^\d{6}$")
-    company1_opinion_summary: str = Field(..., min_length=1, max_length=1000)
-    company1_ta_summary: str = Field(..., min_length=1, max_length=1000)
-    company2_name: str = Field(..., min_length=1, max_length=100)
-    company2_ticker: str = Field(..., pattern=r"^\d{6}$")
-    company2_opinion_summary: str = Field(..., min_length=1, max_length=1000)
-    company2_ta_summary: str = Field(..., min_length=1, max_length=1000)
-    company3_name: str = Field(..., min_length=1, max_length=100)
-    company3_ticker: str = Field(..., pattern=r"^\d{6}$")
-    company3_opinion_summary: str = Field(..., min_length=1, max_length=1000)
-    company3_ta_summary: str = Field(..., min_length=1, max_length=1000)
-
-
 app = FastAPI(
     title="CAM Backend API",
     description="HTTP API for crawling a news URL and selecting meaningful Korean listed companies.",
@@ -252,18 +239,93 @@ def require_reports_api_token(authorization: Optional[str]) -> None:
 
 @app.post("/api/reports", status_code=201)
 def create_report(
-    payload: ReportIngestRequest,
+    file: UploadFile = File(...),
+    title: str = Form(...),
+    report_date: str = Form(...),
+    category: str = Form(...),
+    company: Optional[str] = Form(default=None),
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
     require_reports_api_token(authorization)
+
+    normalized_title = title.strip()
+    normalized_category = category.strip()
+    if not normalized_title:
+        raise HTTPException(status_code=422, detail="title must not be empty.")
+    if not normalized_category:
+        raise HTTPException(status_code=422, detail="category must not be empty.")
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="PDF 파일만 업로드할 수 있습니다.")
+
     try:
-        report, created = save_report(payload.model_dump())
+        s3_key = build_report_s3_key(report_date, file.filename or "report.pdf")
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=422,
+            detail="report_date must use a valid YYYY-MM-DD date.",
+        ) from exc
+
+    first_bytes = file.file.read(5)
+    if first_bytes != b"%PDF-":
+        raise HTTPException(status_code=400, detail="유효한 PDF 파일이 아닙니다.")
+    file.file.seek(0, 2)
+    file_size = file.file.tell()
+    file.file.seek(0)
+    try:
+        max_bytes = get_report_pdf_max_bytes()
+        region, bucket = get_report_s3_settings()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if file_size > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"PDF file exceeds the {max_bytes}-byte upload limit.",
+        )
+
+    s3 = None
+    uploaded = False
+    try:
+        s3 = boto3.client("s3", region_name=region)
+        s3.upload_fileobj(
+            file.file,
+            bucket,
+            s3_key,
+            ExtraArgs={
+                "ContentType": "application/pdf",
+                "ContentDisposition": "inline",
+            },
+        )
+        uploaded = True
+        report = save_uploaded_report(
+            title=normalized_title,
+            report_date=report_date,
+            category=normalized_category,
+            company=company,
+            s3_key=s3_key,
+            original_filename=file.filename or "report.pdf",
+            content_type="application/pdf",
+            file_size=file_size,
+        )
+    except Exception as exc:
+        if uploaded and s3 is not None:
+            try:
+                s3.delete_object(Bucket=bucket, Key=s3_key)
+            except Exception:
+                logger.exception("Failed to clean up S3 object after report upload failure")
+        logger.exception("Report PDF upload failed")
+        raise HTTPException(status_code=502, detail="보고서 업로드에 실패했습니다.") from exc
+    finally:
+        file.file.close()
+
     return {
         "status": "success",
-        "created": created,
+        "success": True,
         "report_id": report["id"],
+        "title": report["Title"],
+        "report_date": report["report_date"],
+        "category": report["category"],
+        "company": report["company"],
+        "s3_key": report["s3_key"],
     }
 
 
