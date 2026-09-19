@@ -77,6 +77,8 @@ from cam_pipeline.reports import (
     list_reports,
     save_uploaded_report,
 )
+from ai_research_department.models import ResearchRequest as AiResearchRequest
+from ai_research_department.orchestration.research_director import ResearchDirector
 
 
 FRAMER_ORIGIN = "https://ambiguous-replacement-035632.framer.app"
@@ -102,6 +104,18 @@ class ChartResearchRequest(NewResearchRequest):
     intraday_plot_interval: str = DEFAULT_PLOT_INTERVAL
     intraday_recent_points: int = Field(default=DEFAULT_RECENT_POINTS, ge=5, le=500)
     recent_rows: int = Field(default=DEFAULT_RECENT_ROWS, ge=1, le=30)
+
+
+class AiResearchRunRequest(BaseModel):
+    company: str = Field(..., min_length=1, max_length=80)
+    ticker: str = ""
+    market: Optional[str] = None
+    research_type: str = "earnings_preview"
+    objective: str = "Build an evidence-linked equity research report."
+    data_mode: Literal["mock", "real"] = "real"
+    price_period: str = "6mo"
+    price_interval: str = "1d"
+    refresh_krx_listings: bool = False
 
 
 class CompanyDashboardRequest(BaseModel):
@@ -2195,6 +2209,31 @@ def refresh_krx_listings_api(payload: KrxListingsRefreshRequest = KrxListingsRef
 @app.post("/api/ai-research/krx-listings/refresh")
 def refresh_ai_research_krx_listings_api(payload: KrxListingsRefreshRequest = KrxListingsRefreshRequest()) -> dict:
     return refresh_krx_listings_api(payload)
+
+
+@app.post("/api/ai-research/run")
+async def run_ai_research_api(payload: AiResearchRunRequest) -> dict:
+    try:
+        director = ResearchDirector()
+        return await director.run_research(
+            AiResearchRequest(
+                company=payload.company.strip(),
+                ticker=payload.ticker.strip(),
+                market=payload.market,
+                research_type=payload.research_type,
+                objective=payload.objective,
+                data_mode=payload.data_mode,
+                price_period=payload.price_period,
+                price_interval=payload.price_interval,
+                refresh_krx_listings=payload.refresh_krx_listings,
+            )
+        )
+    except Exception as exc:
+        logger.exception("AI research workflow failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"AI 리서치 생성 중 오류가 발생했습니다: {exc}",
+        ) from exc
 
 
 @app.post("/api/new-research")
