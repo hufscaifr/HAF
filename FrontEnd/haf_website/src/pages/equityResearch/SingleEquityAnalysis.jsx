@@ -366,13 +366,15 @@ function SingleEquityAnalysis() {
         </aside>
       </div>
 
-      <ReportPreview report={report} logs={logs} />
+      <ReportPreview report={report} charts={result?.charts || []} logs={logs} />
     </section>
   );
 }
 
 function DepartmentOutputPanel({ department, result, running, state }) {
   const output = buildDepartmentOutput(department, result);
+  const charts = result?.charts || [];
+  const showCharts = department.key === 'data' && charts.length > 0;
 
   return (
     <div className="ai-dept-output">
@@ -408,6 +410,14 @@ function DepartmentOutputPanel({ department, result, running, state }) {
           </div>
         ))}
       </div>
+
+      {showCharts && (
+        <div className="ai-dept-output__charts">
+          {charts.slice(0, 2).map((chart) => (
+            <ChartArtifactView chart={chart} compact key={chart.chart_id} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -619,7 +629,7 @@ function collectLogicBlocks(report) {
   return [...fromPoints, ...fromSections].filter((block) => block.claim);
 }
 
-function ReportPreview({ report, logs }) {
+function ReportPreview({ report, charts, logs }) {
   if (!report) {
     return (
       <section className="ai-report-preview empty">
@@ -664,6 +674,17 @@ function ReportPreview({ report, logs }) {
                 </li>
               ))}
             </ul>
+          </article>
+        )}
+
+        {charts?.length > 0 && (
+          <article className="ai-report-section ai-report-charts">
+            <h3>Charts</h3>
+            <div className="ai-chart-grid">
+              {charts.map((chart) => (
+                <ChartArtifactView chart={chart} key={chart.chart_id} />
+              ))}
+            </div>
           </article>
         )}
 
@@ -714,6 +735,65 @@ function ReportPreview({ report, logs }) {
       </aside>
     </section>
   );
+}
+
+function ChartArtifactView({ chart, compact = false }) {
+  const rows = Array.isArray(chart?.data) ? chart.data : [];
+  const maxValue = rows.reduce((max, row) => {
+    const value = Math.abs(Number(row?.value) || 0);
+    return value > max ? value : max;
+  }, 0);
+
+  return (
+    <div className={`ai-chart-card ${compact ? 'compact' : ''}`}>
+      <div className="ai-chart-card__head">
+        <div>
+          <span>{chart?.chart_type || 'bar'} chart</span>
+          <strong>{chart?.title || chart?.chart_id || 'Chart'}</strong>
+        </div>
+        <small>{rows.length} metrics</small>
+      </div>
+
+      <div className="ai-chart-bars">
+        {rows.slice(0, compact ? 5 : 8).map((row) => {
+          const value = Number(row?.value) || 0;
+          const width = maxValue > 0 ? Math.max(6, (Math.abs(value) / maxValue) * 100) : 0;
+          return (
+            <div className="ai-chart-bar-row" key={`${chart.chart_id}-${row.metric}-${row.period}`}>
+              <div className="ai-chart-bar-meta">
+                <span>{row.label || row.metric || 'Metric'}</span>
+                <strong>{formatChartValue(value, row.unit)}</strong>
+              </div>
+              <div className="ai-chart-bar-track">
+                <span style={{ width: `${width}%` }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {chart?.description && !compact && (
+        <p className="ai-chart-description">{chart.description}</p>
+      )}
+    </div>
+  );
+}
+
+function formatChartValue(value, unit) {
+  if (!Number.isFinite(value)) return 'N/A';
+  const suffix = unit === 'KRW' || unit === 'KRW/share'
+    ? '원'
+    : unit === 'shares'
+      ? '주'
+      : unit || '';
+  const absValue = Math.abs(value);
+  if (suffix === '원' || suffix === '주') {
+    if (absValue >= 1_0000_0000_0000) return `${(value / 1_0000_0000_0000).toFixed(1)}조${suffix}`;
+    if (absValue >= 1_0000_0000) return `${(value / 1_0000_0000).toFixed(1)}억${suffix}`;
+    if (absValue >= 1_0000) return `${(value / 1_0000).toLocaleString('ko-KR', { maximumFractionDigits: 1 })}만${suffix}`;
+    return `${value.toLocaleString('ko-KR', { maximumFractionDigits: 1 })}${suffix}`;
+  }
+  return `${value.toLocaleString('ko-KR', { maximumFractionDigits: 2 })}${suffix}`;
 }
 
 function DepartmentIcon({ type }) {

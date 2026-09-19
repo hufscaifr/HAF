@@ -645,6 +645,12 @@
   overflow-wrap: anywhere;
 }
 
+.ai-dept-output__charts {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
 .ai-report-preview {
   align-items: start;
   display: grid;
@@ -750,6 +756,112 @@
   margin-top: 8px;
 }
 
+.ai-chart-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.ai-chart-card {
+  background: rgba(245, 245, 247, 0.78);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 20px;
+  padding: 16px;
+}
+
+.ai-chart-card.compact {
+  background: rgba(255, 255, 255, 0.72);
+  border-radius: 16px;
+  padding: 12px;
+}
+
+.ai-chart-card__head {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.ai-chart-card__head span {
+  color: #86868b;
+  display: block;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+
+.ai-chart-card__head strong {
+  color: #1d1d1f;
+  display: block;
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.ai-chart-card__head small {
+  background: rgba(29, 29, 31, 0.08);
+  border-radius: 999px;
+  color: #4b5563;
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 5px 8px;
+}
+
+.ai-chart-bars {
+  display: grid;
+  gap: 12px;
+  margin-top: 15px;
+}
+
+.ai-chart-bar-meta {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.ai-chart-bar-meta span {
+  color: #424245;
+  font-size: 12px;
+  font-weight: 760;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-chart-bar-meta strong {
+  color: #1d1d1f;
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 820;
+}
+
+.ai-chart-bar-track {
+  background: rgba(29, 29, 31, 0.08);
+  border-radius: 999px;
+  height: 9px;
+  overflow: hidden;
+}
+
+.ai-chart-bar-track span {
+  background: linear-gradient(90deg, #1d1d1f, #0a4d2e);
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  min-width: 6px;
+}
+
+.ai-chart-description {
+  color: #6e6e73;
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 14px 0 0;
+}
+
 .ai-report-columns {
   display: grid;
   gap: 26px;
@@ -794,6 +906,7 @@
 
   .ai-center-status,
   .ai-department-map,
+  .ai-chart-grid,
   .ai-report-columns {
     grid-template-columns: 1fr;
   }
