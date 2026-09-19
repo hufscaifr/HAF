@@ -107,6 +107,7 @@ function SingleEquityAnalysis() {
   const [running, setRunning] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const [messageIndex, setMessageIndex] = useState(0);
+  const [selectedDepartmentKey, setSelectedDepartmentKey] = useState('issue');
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
 
@@ -125,6 +126,9 @@ function SingleEquityAnalysis() {
   const riskCount = result?.risk_assessments?.length || 0;
   const chartCount = result?.charts?.length || 0;
   const tableCount = result?.tables?.length || 0;
+  const selectedDepartment = departments.find(
+    (department) => department.key === selectedDepartmentKey
+  ) || departments[0];
 
   const progress = useMemo(() => {
     if (result) return 100;
@@ -142,6 +146,7 @@ function SingleEquityAnalysis() {
     setError('');
     setActiveIndex(0);
     setMessageIndex(0);
+    setSelectedDepartmentKey('issue');
 
     try {
       const response = await fetch(apiUrl('/api/ai-research/run'), {
@@ -185,6 +190,10 @@ function SingleEquityAnalysis() {
     if (running && index === activeIndex) return 'active';
     if (running && index < activeIndex) return 'completed';
     return 'idle';
+  };
+
+  const selectDepartment = (departmentKey) => {
+    setSelectedDepartmentKey(departmentKey);
   };
 
   return (
@@ -261,8 +270,20 @@ function SingleEquityAnalysis() {
                 const isActive = state === 'active';
                 return (
                   <article
-                    className={`ai-dept-node ${state}`}
+                    className={`ai-dept-node ${state} ${
+                      selectedDepartmentKey === department.key ? 'selected' : ''
+                    }`}
                     key={department.key}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={selectedDepartmentKey === department.key}
+                    onClick={() => selectDepartment(department.key)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        selectDepartment(department.key);
+                      }
+                    }}
                     style={{ '--node-index': index }}
                   >
                     <div className="ai-dept-node__top">
@@ -332,12 +353,238 @@ function SingleEquityAnalysis() {
               <strong>{tableCount}</strong>
             </div>
           </div>
+
+          <DepartmentOutputPanel
+            department={selectedDepartment}
+            result={result}
+            running={running}
+            state={getDepartmentState(
+              selectedDepartment,
+              departments.findIndex((item) => item.key === selectedDepartment.key)
+            )}
+          />
         </aside>
       </div>
 
       <ReportPreview report={report} logs={logs} />
     </section>
   );
+}
+
+function DepartmentOutputPanel({ department, result, running, state }) {
+  const output = buildDepartmentOutput(department, result);
+
+  return (
+    <div className="ai-dept-output">
+      <div className="ai-dept-output__head">
+        <span>Selected Department Output</span>
+        <strong>{department.label}</strong>
+      </div>
+
+      <div className={`ai-dept-output__status ${state}`}>
+        {running && state === 'active'
+          ? 'Processing live request'
+          : result
+            ? 'Output available'
+            : 'Waiting for run'}
+      </div>
+
+      <p className="ai-dept-output__summary">{output.summary}</p>
+
+      <div className="ai-dept-output__grid">
+        {output.metrics.map((metric) => (
+          <div key={metric.label}>
+            <span>{metric.label}</span>
+            <strong>{metric.value}</strong>
+          </div>
+        ))}
+      </div>
+
+      <div className="ai-dept-output__list">
+        {output.items.map((item) => (
+          <div key={item.title} className="ai-dept-output__item">
+            <strong>{item.title}</strong>
+            <p>{item.body}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function buildDepartmentOutput(department, result) {
+  const report = result?.report?.json_payload;
+  const risks = result?.risk_assessments || [];
+  const charts = result?.charts || [];
+  const tables = result?.tables || [];
+  const logs = result?.logs || [];
+  const snapshot = report?.financial_snapshot || {};
+
+  if (!result) {
+    return {
+      summary: department.request,
+      metrics: [
+        { label: 'Junior', value: department.junior },
+        { label: 'Senior', value: department.senior },
+      ],
+      items: [
+        { title: 'Expected request', body: department.request },
+        { title: 'Expected response', body: department.response },
+      ],
+    };
+  }
+
+  const baseMetrics = [
+    { label: 'Stage', value: result.project?.stage || 'completed' },
+    { label: 'Report', value: result.report?.verification_passed ? 'verified' : 'draft' },
+  ];
+
+  if (department.key === 'issue') {
+    return {
+      summary: 'Issue Department가 승인한 핵심 이슈가 최종 보고서의 Key Issues로 전달됐습니다.',
+      metrics: [
+        { label: 'Issues', value: report?.key_issues?.length || 0 },
+        ...baseMetrics,
+      ],
+      items: (report?.key_issues || []).slice(0, 5).map((issue, index) => ({
+        title: `Issue ${index + 1}`,
+        body: issue,
+      })),
+    };
+  }
+
+  if (department.key === 'cause') {
+    return {
+      summary: 'Cause Analysis Dept는 이슈별 영향 metric과 downstream data request를 구성했습니다.',
+      metrics: [
+        { label: 'Flows', value: 'issue → data' },
+        ...baseMetrics,
+      ],
+      items: [
+        { title: 'Request sent', body: '이슈별 affected metric을 Data Research Dept에 전달했습니다.' },
+        { title: 'Linked output', body: report?.key_issues?.[0] || department.response },
+      ],
+    };
+  }
+
+  if (department.key === 'data') {
+    return {
+      summary: 'Data Research Dept가 가격, 재무 evidence와 visualization artifact를 생성했습니다.',
+      metrics: [
+        { label: 'Charts', value: charts.length },
+        { label: 'Tables', value: tables.length },
+        { label: 'Raw data', value: 'evidence' },
+      ],
+      items: [
+        ...charts.slice(0, 3).map((chart) => ({
+          title: chart.title || chart.chart_id,
+          body: `${chart.chart_type || 'chart'} · ${chart.metric || 'metric'} · ${chart.chart_id}`,
+        })),
+        ...tables.slice(0, 2).map((table) => ({
+          title: table.title || table.table_id,
+          body: `${table.rows?.length || 0} rows · ${table.columns?.length || 0} columns`,
+        })),
+      ],
+    };
+  }
+
+  if (department.key === 'fundamental') {
+    return {
+      summary: 'Fundamental Research Dept가 수집된 evidence를 매출, 이익, 수익성 snapshot으로 번역했습니다.',
+      metrics: [
+        { label: 'Revenue', value: formatOutputValue(snapshot.revenue) },
+        { label: 'OP', value: formatOutputValue(snapshot.operating_profit) },
+        { label: 'ROE', value: formatOutputValue(snapshot.roe) },
+      ],
+      items: [
+        { title: 'Operating margin', body: formatOutputValue(snapshot.operating_margin) },
+        { title: 'Debt ratio', body: formatOutputValue(snapshot.debt_ratio) },
+      ],
+    };
+  }
+
+  if (department.key === 'estimate') {
+    return {
+      summary: 'Estimate Department가 승인 assumption을 기반으로 실적 preview snapshot을 계산했습니다.',
+      metrics: [
+        { label: 'Period', value: snapshot.period || 'N/A' },
+        { label: 'Revenue', value: formatOutputValue(snapshot.revenue) },
+        { label: 'EPS', value: formatOutputValue(snapshot.eps) },
+      ],
+      items: [
+        { title: 'Operating profit', body: formatOutputValue(snapshot.operating_profit) },
+        { title: 'EPS revision', body: snapshot.eps_revision_pct ?? 'consensus unavailable' },
+      ],
+    };
+  }
+
+  if (department.key === 'risk') {
+    return {
+      summary: 'Risk Department가 발생 이슈의 리스크, 영향 분석, 펀더멘탈/주가 검증을 수행했습니다.',
+      metrics: [
+        { label: 'Risks', value: risks.length },
+        { label: 'Report risks', value: report?.risks?.length || 0 },
+        { label: 'Severity', value: risks[0]?.severity || 'N/A' },
+      ],
+      items: risks.slice(0, 4).map((risk) => ({
+        title: risk.title,
+        body: `${risk.risk_type} · ${risk.severity} · ${risk.verification_view}`,
+      })),
+    };
+  }
+
+  if (department.key === 'report') {
+    return {
+      summary: 'Report Department가 부서별 output을 섹션 draft와 본문 구조로 작성했습니다.',
+      metrics: [
+        { label: 'Summary', value: report?.investment_summary?.length || 0 },
+        { label: 'Points', value: report?.investment_points?.length || 0 },
+        { label: 'Risks', value: report?.risks?.length || 0 },
+      ],
+      items: (report?.investment_summary || []).slice(0, 4).map((item, index) => ({
+        title: `Summary ${index + 1}`,
+        body: item,
+      })),
+    };
+  }
+
+  if (department.key === 'merge') {
+    return {
+      summary: 'Merging Department가 승인된 섹션 draft를 프론트 렌더링용 JSON payload로 취합했습니다.',
+      metrics: [
+        { label: 'Writer', value: result.report?.writer || 'N/A' },
+        { label: 'Claims', value: result.report?.claims?.length || 0 },
+        { label: 'Sections', value: result.report?.sections?.length || 0 },
+      ],
+      items: [
+        { title: 'Final title', body: report?.title || result.report?.title || 'N/A' },
+        { title: 'Payload', body: 'title, financial_snapshot, investment_points, risks, chart_ids, table_ids' },
+      ],
+    };
+  }
+
+  return {
+    summary: 'Verification Department가 claim lineage, 숫자 계산, report consistency를 최종 검증했습니다.',
+    metrics: [
+      { label: 'Verified', value: result.report?.verification_passed ? 'true' : 'false' },
+      { label: 'Logs', value: logs.length },
+      { label: 'Ready', value: result.project?.report_ready ? 'true' : 'false' },
+    ],
+    items: logs.slice(-5).map((log, index) => ({
+      title: `Check ${index + 1}`,
+      body: log,
+    })),
+  };
+}
+
+function formatOutputValue(value) {
+  if (value === null || value === undefined || value === '') return 'N/A';
+  if (typeof value === 'number') {
+    if (Math.abs(value) >= 1_0000_0000_0000) return `${(value / 1_0000_0000_0000).toFixed(1)}조`;
+    if (Math.abs(value) >= 1_0000_0000) return `${(value / 1_0000_0000).toFixed(1)}억`;
+    if (Math.abs(value) >= 1_0000) return `${value.toLocaleString('ko-KR', { maximumFractionDigits: 1 })}`;
+  }
+  return String(value);
 }
 
 function ReportPreview({ report, logs }) {
