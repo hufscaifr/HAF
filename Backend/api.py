@@ -2175,7 +2175,7 @@ def get_krx_listings(market: Optional[str] = None, limit: int = 50) -> dict:
 
 
 @app.post("/api/krx-listings/refresh")
-def refresh_krx_listings_api(payload: KrxListingsRefreshRequest) -> dict:
+def refresh_krx_listings_api(payload: KrxListingsRefreshRequest = KrxListingsRefreshRequest()) -> dict:
     try:
         return refresh_krx_listings(
             bas_dd=payload.bas_dd,
@@ -2190,6 +2190,11 @@ def refresh_krx_listings_api(payload: KrxListingsRefreshRequest) -> dict:
             status_code=502,
             detail=f"KRX API 요청 중 오류가 발생했습니다: {exc}",
         ) from exc
+
+
+@app.post("/api/ai-research/krx-listings/refresh")
+def refresh_ai_research_krx_listings_api(payload: KrxListingsRefreshRequest = KrxListingsRefreshRequest()) -> dict:
+    return refresh_krx_listings_api(payload)
 
 
 @app.post("/api/new-research")

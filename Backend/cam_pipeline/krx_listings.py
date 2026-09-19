@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -153,10 +153,10 @@ def parse_listing_row(row: dict[str, Any], fallback_market: str) -> Optional[dic
     )
     title = first_value(
         row,
-        "ISU_NM",
-        "isuNm",
         "ISU_ABBRV",
         "isuAbrv",
+        "ISU_NM",
+        "isuNm",
         "KOR_CORP_NM",
         "korCorpNm",
         "stockNameKr",
@@ -203,12 +203,13 @@ def refresh_krx_listings(
     db_path: Optional[Path] = None,
 ) -> dict[str, Any]:
     now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    resolved_bas_dd = bas_dd or resolve_latest_krx_base_date(markets=markets)
     listings: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
 
     for market in markets:
         normalized_market = normalize_market(market)
-        rows = fetch_krx_listing_rows(normalized_market, bas_dd=bas_dd)
+        rows = fetch_krx_listing_rows(normalized_market, bas_dd=resolved_bas_dd)
         parsed = [
             listing
             for listing in (
@@ -248,16 +249,35 @@ def refresh_krx_listings(
                 ),
             )
         set_metadata(conn, "last_refresh_at", now)
-        set_metadata(conn, "last_refresh_bas_dd", bas_dd or "")
+        set_metadata(conn, "last_refresh_bas_dd", resolved_bas_dd or "")
         set_metadata(conn, "last_refresh_total", str(len(listings)))
         conn.commit()
 
     return {
         "status": "success",
-        "bas_dd": bas_dd,
+        "bas_dd": resolved_bas_dd,
         "total": len(listings),
         "counts": counts,
     }
+
+
+def resolve_latest_krx_base_date(
+    markets: tuple[str, ...] = ("KOSPI", "KOSDAQ"),
+    lookback_days: int = 10,
+) -> str:
+    """Find the latest base date that returns KRX listing rows."""
+    today = datetime.now().date()
+    for offset in range(lookback_days + 1):
+        candidate = today - timedelta(days=offset)
+        bas_dd = candidate.strftime("%Y%m%d")
+        try:
+            fetch_krx_listing_rows(markets[0], bas_dd=bas_dd)
+            return bas_dd
+        except (KrxListingsError, requests.RequestException):
+            continue
+    raise KrxListingsError(
+        f"최근 {lookback_days}일 내 KRX 종목기본정보 기준일자를 찾지 못했습니다."
+    )
 
 
 def lookup_krx_listing(ticker: Any, db_path: Optional[Path] = None) -> Optional[dict[str, Any]]:
