@@ -736,6 +736,20 @@
   display: block;
 }
 
+.ai-report-logic li {
+  background: rgba(245, 245, 247, 0.72);
+  border-radius: 16px;
+  padding: 14px;
+}
+
+.ai-report-logic li small {
+  color: #6e6e73;
+  display: block;
+  font-size: 13px;
+  line-height: 1.55;
+  margin-top: 8px;
+}
+
 .ai-report-columns {
   display: grid;
   gap: 26px;

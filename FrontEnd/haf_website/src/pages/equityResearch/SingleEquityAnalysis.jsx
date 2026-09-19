@@ -534,12 +534,13 @@ function buildDepartmentOutput(department, result) {
   }
 
   if (department.key === 'report') {
+    const logicCount = countLogicBlocks(report);
     return {
       summary: 'Report Department가 부서별 output을 섹션 draft와 본문 구조로 작성했습니다.',
       metrics: [
         { label: 'Summary', value: report?.investment_summary?.length || 0 },
         { label: 'Points', value: report?.investment_points?.length || 0 },
-        { label: 'Risks', value: report?.risks?.length || 0 },
+        { label: 'Logic', value: logicCount },
       ],
       items: (report?.investment_summary || []).slice(0, 4).map((item, index) => ({
         title: `Summary ${index + 1}`,
@@ -549,12 +550,13 @@ function buildDepartmentOutput(department, result) {
   }
 
   if (department.key === 'merge') {
+    const logicCount = countLogicBlocks(report);
     return {
       summary: 'Merging Department가 승인된 섹션 draft를 프론트 렌더링용 JSON payload로 취합했습니다.',
       metrics: [
         { label: 'Writer', value: result.report?.writer || 'N/A' },
         { label: 'Claims', value: result.report?.claims?.length || 0 },
-        { label: 'Sections', value: result.report?.sections?.length || 0 },
+        { label: 'Logic', value: logicCount },
       ],
       items: [
         { title: 'Final title', body: report?.title || result.report?.title || 'N/A' },
@@ -587,6 +589,36 @@ function formatOutputValue(value) {
   return String(value);
 }
 
+function countLogicBlocks(report) {
+  if (!report) return 0;
+  const sections = [
+    ...(report.investment_points || []),
+    report.earnings_outlook,
+    report.valuation,
+    report.conclusion,
+  ].filter(Boolean);
+  return sections.reduce((count, section) => count + (section.logic_chain?.length || 0), 0);
+}
+
+function collectLogicBlocks(report) {
+  if (!report) return [];
+  const fromPoints = (report.investment_points || []).flatMap((point) =>
+    (point.logic_chain || []).map((block) => ({
+      ...block,
+      source: point.title,
+    }))
+  );
+  const fromSections = [report.earnings_outlook, report.valuation, report.conclusion]
+    .filter(Boolean)
+    .flatMap((section) =>
+      (section.logic_chain || []).map((block) => ({
+        ...block,
+        source: section.title,
+      }))
+    );
+  return [...fromPoints, ...fromSections].filter((block) => block.claim);
+}
+
 function ReportPreview({ report, logs }) {
   if (!report) {
     return (
@@ -597,6 +629,8 @@ function ReportPreview({ report, logs }) {
       </section>
     );
   }
+
+  const logicBlocks = collectLogicBlocks(report);
 
   return (
     <section className="ai-report-preview">
@@ -615,6 +649,23 @@ function ReportPreview({ report, logs }) {
             <p key={item}>{item}</p>
           ))}
         </article>
+
+        {logicBlocks.length > 0 && (
+          <article className="ai-report-section ai-report-logic">
+            <h3>Analytical Chain</h3>
+            <ul>
+              {logicBlocks.slice(0, 5).map((block, index) => (
+                <li key={`${block.claim}-${index}`}>
+                  <strong>{block.source || `Logic ${index + 1}`}</strong>
+                  <span>{block.claim}</span>
+                  {block.financial_implication && (
+                    <small>{block.financial_implication}</small>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </article>
+        )}
 
         <article className="ai-report-section">
           <h3>Key Issues</h3>

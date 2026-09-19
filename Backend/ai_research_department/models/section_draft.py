@@ -16,6 +16,7 @@ class ReportSectionDraft(TimestampedModel):
     title: str
     summary: str
     bullets: list[str] = Field(default_factory=list)
+    logic_chain: list[dict] = Field(default_factory=list)
     citation_ids: list[str] = Field(default_factory=list)
     chart_ids: list[str] = Field(default_factory=list)
     table_ids: list[str] = Field(default_factory=list)

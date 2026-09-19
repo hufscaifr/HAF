@@ -14,6 +14,7 @@ from ai_research_department.models import (
     ResearchTask,
 )
 from ai_research_department.repositories.sqlite_repository import dump_model
+from ai_research_department.services.prompt_loader import PromptLoader
 from ai_research_department.utils.number_format import format_korean_number
 from ai_research_department.workspace.research_context import ResearchContext
 
@@ -64,6 +65,15 @@ class MergingJuniorAgent(JuniorAgent):
 
     async def _merge_with_openai(self, context: ResearchContext) -> FrontendReportJson:
         provider = OpenAIProvider()
+        loader = PromptLoader()
+        system_prompt = "\n\n".join(
+            [
+                loader.load("common/research_reasoning_contract.md"),
+                loader.load("merging/junior.md"),
+                "Create one final frontend-ready JSON report in Korean.",
+                "Do not introduce new facts. Preserve claim lineage and populate logic_chain where possible.",
+            ]
+        )
         prompt = {
             "instructions": {
                 "language": "ko",
@@ -86,11 +96,7 @@ class MergingJuniorAgent(JuniorAgent):
             "tables": [dump_model(item) for item in context.tables()],
         }
         return await provider.generate_structured(
-            system_prompt=(
-                "You are the merging editor of a Korean securities research center. "
-                "Create one final frontend-ready JSON report from approved section drafts. "
-                "The output must be coherent, longer than the drafts, and strictly evidence-bound."
-            ),
+            system_prompt=system_prompt,
             user_prompt=json.dumps(prompt, ensure_ascii=False, indent=2, default=str),
             output_schema=FrontendReportJson,
         )
@@ -175,12 +181,34 @@ class MergingJuniorAgent(JuniorAgent):
                     "title": "실적 preview의 기준선",
                     "thesis": f"{estimate.period} preview는 매출 {estimate_revenue}, 영업이익 {estimate_operating_profit}, EPS {estimate_eps}를 기준선으로 둡니다. 이 수치는 현재 승인된 estimate와 공시 기반 evidence에 연결됩니다.",
                     "supporting_metrics": earnings_bullets,
+                    "logic_chain": [
+                        {
+                            "claim": "현재 리포트의 실적 기준선은 승인 estimate snapshot입니다.",
+                            "evidence_ids": evidence_ids,
+                            "estimate_ids": [estimate.estimate_id],
+                            "interpretation": "forward guidance나 consensus가 없으므로 reported/current snapshot을 forecast로 과장하지 않습니다.",
+                            "financial_implication": f"매출 {estimate_revenue}, 영업이익 {estimate_operating_profit}, EPS {estimate_eps}가 earnings bridge의 기준점입니다.",
+                            "counterargument": "NO_CONSENSUS_AVAILABLE; forward view is insufficient without additional guidance.",
+                            "confidence": 0.78,
+                        }
+                    ],
                     "citation_ids": lineage_ids,
                 },
                 {
                     "title": "valuation check",
                     "thesis": f"PER {per}, PBR {pbr}, ROE {roe}를 함께 보면 가격 부담과 자기자본 수익성을 동시에 확인할 수 있습니다. 아직 peer multiple이나 목표 multiple은 연결하지 않았기 때문에 결론은 snapshot 해석에 머뭅니다.",
                     "supporting_metrics": valuation_bullets,
+                    "logic_chain": [
+                        {
+                            "claim": "현재 valuation 판단은 peer나 historical comparison이 아니라 snapshot multiple 해석입니다.",
+                            "evidence_ids": evidence_ids,
+                            "estimate_ids": [estimate.estimate_id],
+                            "interpretation": "PER/PBR은 ROE와 margin evidence 없이는 독립적인 투자 결론으로 쓰기 어렵습니다.",
+                            "financial_implication": "valuation implication is limited until peer multiple, historical average, or forward estimate is available.",
+                            "counterargument": "Multiple may be misleading if current EPS is not representative of forward earnings.",
+                            "confidence": 0.7,
+                        }
+                    ],
                     "citation_ids": lineage_ids,
                 },
                 {
@@ -190,6 +218,16 @@ class MergingJuniorAgent(JuniorAgent):
                         f"생성된 chart artifact 수: {len(chart_ids)}",
                         f"생성된 table artifact 수: {len(table_ids)}",
                         "부서별 section draft를 먼저 만들고 merge하는 구조라, 느린 섹션은 fallback 처리하면서도 최종 보고서를 완성할 수 있습니다.",
+                    ],
+                    "logic_chain": [
+                        {
+                            "claim": "리포트 payload는 본문과 visualization artifact를 함께 전달합니다.",
+                            "evidence_ids": evidence_ids,
+                            "interpretation": "투자 판단 자체가 아니라 프론트 렌더링과 auditability를 높이는 구조적 장점입니다.",
+                            "financial_implication": "No direct financial implication.",
+                            "counterargument": "Visualization does not replace source evidence review.",
+                            "confidence": 0.82,
+                        }
                     ],
                     "citation_ids": lineage_ids,
                 }
@@ -293,6 +331,7 @@ class MergingJuniorAgent(JuniorAgent):
                 "title": title,
                 "summary": "",
                 "bullets": bullets or [],
+                "logic_chain": [],
                 "citation_ids": evidence_ids,
                 "chart_ids": chart_ids,
                 "table_ids": table_ids,
@@ -302,6 +341,7 @@ class MergingJuniorAgent(JuniorAgent):
             "title": draft.title,
             "summary": draft.summary,
             "bullets": draft.bullets or bullets or [],
+            "logic_chain": draft.logic_chain,
             "citation_ids": draft.citation_ids or evidence_ids,
             "chart_ids": draft.chart_ids or chart_ids,
             "table_ids": draft.table_ids or table_ids,
@@ -318,11 +358,15 @@ class MergingJuniorAgent(JuniorAgent):
         sentences.extend((item, []) for item in report_json.investment_summary)
         for point in report_json.investment_points:
             sentences.append((point.thesis, point.citation_ids))
+            sentences.extend(self._logic_chain_sentences(point.logic_chain))
         sentences.append((report_json.earnings_outlook.summary, report_json.earnings_outlook.citation_ids))
+        sentences.extend(self._logic_chain_sentences(report_json.earnings_outlook.logic_chain))
         sentences.append((report_json.valuation.summary, report_json.valuation.citation_ids))
+        sentences.extend(self._logic_chain_sentences(report_json.valuation.logic_chain))
         for risk in report_json.risks:
             sentences.append((risk.description, risk.citation_ids))
         sentences.append((report_json.conclusion.summary, report_json.conclusion.citation_ids))
+        sentences.extend(self._logic_chain_sentences(report_json.conclusion.logic_chain))
         for sentence, citation_ids in sentences:
             evidence_ids = [item for item in citation_ids if item in valid_evidence_ids]
             estimate_ids = [item for item in citation_ids if item in valid_estimate_ids]
@@ -332,6 +376,20 @@ class MergingJuniorAgent(JuniorAgent):
                 estimate_ids = default_estimate_ids
             claims.append(ReportClaim(sentence=sentence, evidence_ids=evidence_ids, estimate_ids=estimate_ids, hypothesis_ids=hypothesis_ids))
         return claims
+
+    def _logic_chain_sentences(self, logic_chain: list[dict]) -> list[tuple[str, list[str]]]:
+        sentences: list[tuple[str, list[str]]] = []
+        for block in logic_chain or []:
+            claim = str(block.get("claim") or "").strip()
+            if not claim:
+                continue
+            citation_ids = []
+            for key in ("evidence_ids", "estimate_ids", "hypothesis_ids"):
+                values = block.get(key) or []
+                if isinstance(values, list):
+                    citation_ids.extend(str(item) for item in values)
+            sentences.append((claim, citation_ids))
+        return sentences
 
     def _build_sections(self, report_json: FrontendReportJson, claims: list[ReportClaim]) -> list[ReportSection]:
         claim_ids = [claim.claim_id for claim in claims]

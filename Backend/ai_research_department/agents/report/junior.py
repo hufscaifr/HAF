@@ -11,6 +11,7 @@ from ai_research_department.config import load_backend_env
 from ai_research_department.llm.openai_provider import OpenAIProvider
 from ai_research_department.models import ReportSectionDraft, ResearchTask
 from ai_research_department.repositories.sqlite_repository import dump_model
+from ai_research_department.services.prompt_loader import PromptLoader
 from ai_research_department.utils.number_format import format_korean_number
 from ai_research_department.workspace.research_context import ResearchContext
 
@@ -19,6 +20,7 @@ class SectionDraftOutput(BaseModel):
     title: str
     summary: str
     bullets: list[str] = Field(default_factory=list)
+    logic_chain: list[dict] = Field(default_factory=list)
     citation_ids: list[str] = Field(default_factory=list)
     chart_ids: list[str] = Field(default_factory=list)
     table_ids: list[str] = Field(default_factory=list)
@@ -87,6 +89,7 @@ class ReportJuniorAgent(JuniorAgent):
                     title=output.title,
                     summary=output.summary,
                     bullets=output.bullets,
+                    logic_chain=output.logic_chain,
                     citation_ids=output.citation_ids,
                     chart_ids=output.chart_ids,
                     table_ids=output.table_ids,
@@ -100,11 +103,19 @@ class ReportJuniorAgent(JuniorAgent):
         return self._fallback_draft(context, department, section_key, title)
 
     def _system_prompt(self, department: str, title: str) -> str:
-        return (
-            f"You are the {department} at a Korean sell-side research organization. "
-            f"Write only the {title} section draft as structured JSON in Korean. "
-            "Use only supplied data. Do not invent target prices, ratings, consensus, or unsupported facts. "
-            "Use citation_ids only from supplied evidence_ids, estimate_ids, hypothesis_ids, chart_ids, and table_ids."
+        loader = PromptLoader()
+        contract = loader.load("common/research_reasoning_contract.md")
+        report_prompt = loader.load("report/junior.md")
+        return "\n\n".join(
+            [
+                contract,
+                report_prompt,
+                f"You are currently acting as the {department}.",
+                f"Write only the {title} section draft as structured JSON in Korean.",
+                "Do not invent target prices, ratings, consensus, management guidance, or unsupported facts.",
+                "Use citation_ids only from supplied evidence_ids, estimate_ids, hypothesis_ids, chart_ids, and table_ids.",
+                "Populate logic_chain whenever possible with claim, evidence_ids, interpretation, financial_implication, counterargument, and confidence.",
+            ]
         )
 
     def _writer_input(self, context: ResearchContext, section_key: str) -> dict:
@@ -154,6 +165,16 @@ class ReportJuniorAgent(JuniorAgent):
             title=title,
             summary=summary_by_key.get(section_key, title),
             bullets=[],
+            logic_chain=[
+                {
+                    "claim": summary_by_key.get(section_key, title),
+                    "evidence_ids": evidence_ids,
+                    "interpretation": "Deterministic fallback section based on approved workspace objects.",
+                    "financial_implication": "Refer to approved estimate snapshot.",
+                    "counterargument": "Forward-looking evidence is limited when consensus or guidance is unavailable.",
+                    "confidence": 0.76,
+                }
+            ],
             citation_ids=evidence_ids,
             chart_ids=chart_ids,
             table_ids=table_ids,
