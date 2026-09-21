@@ -1,8 +1,29 @@
-import mockReports from '../data/mockReports';
+import { useEffect, useState } from 'react';
+import { API_HEADERS, apiUrl } from '../config/api';
 
 function ReportsView() {
   const reportId = new URLSearchParams(window.location.search).get('id');
-  const report = mockReports.find((item) => item.id === reportId);
+  const [report, setReport] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!reportId) {
+      setLoading(false);
+      return;
+    }
+    fetch(apiUrl(`/api/report-archive/${encodeURIComponent(reportId)}`), { headers: API_HEADERS })
+      .then((response) => {
+        if (!response.ok) throw new Error('Report not found.');
+        return response.json();
+      })
+      .then((payload) => setReport(payload.report))
+      .catch(() => setReport(null))
+      .finally(() => setLoading(false));
+  }, [reportId]);
+
+  if (loading) {
+    return <section className="report-detail report-detail--empty"><p>보고서를 불러오는 중입니다.</p></section>;
+  }
 
   if (!report) {
     return (
@@ -19,7 +40,7 @@ function ReportsView() {
       <a className="report-detail__back" href="/reports">← Research Reports</a>
       <header className="report-detail__hero">
         <div>
-          <p className="page__eyebrow">{report.category} · Mock Report</p>
+          <p className="page__eyebrow">{report.category} · {report.is_mock ? 'Mock Report' : 'Research Report'}</p>
           <h1>{report.title}</h1>
           <p className="report-detail__meta">{report.date} · {report.company} · HAF AI Research</p>
         </div>
@@ -36,7 +57,7 @@ function ReportsView() {
           <ul>
             {report.highlights.map((highlight) => <li key={highlight}>{highlight}</li>)}
           </ul>
-          <p className="report-detail__notice">현재 화면은 API 연동 전 검증을 위한 mock 데이터입니다.</p>
+          {report.is_mock && <p className="report-detail__notice">PostgreSQL에 저장된 검증용 mock 데이터입니다.</p>}
         </aside>
       </section>
     </main>

@@ -1,20 +1,33 @@
-import { useState } from 'react';
-import mockReports from '../data/mockReports';
+import { useEffect, useState } from 'react';
+import { API_HEADERS, apiUrl } from '../config/api';
 
 function ReportArchive({ sectionTitle = 'Research Reports' }) {
   const [currentPage, setCurrentPage] = useState(1);
+  const [reports, setReports] = useState([]);
+  const [error, setError] = useState('');
   const itemsPerPage = 9;
-  const totalPages = Math.ceil(mockReports.length / itemsPerPage);
+  const totalPages = Math.ceil(reports.length / itemsPerPage);
   const startIndex = (currentPage - 1) * itemsPerPage;
-  const currentReports = mockReports.slice(startIndex, startIndex + itemsPerPage);
+  const currentReports = reports.slice(startIndex, startIndex + itemsPerPage);
+
+  useEffect(() => {
+    fetch(apiUrl('/api/report-archive?limit=100'), { headers: API_HEADERS })
+      .then((response) => {
+        if (!response.ok) throw new Error('보고서 데이터를 불러오지 못했습니다.');
+        return response.json();
+      })
+      .then((payload) => setReports(payload.reports || []))
+      .catch((requestError) => setError(requestError.message));
+  }, []);
 
   return (
     <section className="caifr-video-archive">
       <div className="caifr-inner">
         <div className="caifr-title-wrap">
-          <p className="caifr-eyebrow">HAF Research Archive · Mock Data</p>
+          <p className="caifr-eyebrow">HAF Research Archive · Database</p>
           <h1 className="caifr-title">{sectionTitle}</h1>
         </div>
+        {error && <p role="alert">{error}</p>}
         <div className="caifr-grid">
           {currentReports.map((report) => (
             <a key={report.id} className="caifr-card" href={`/reports-view?id=${report.id}`}>

@@ -77,6 +77,7 @@ from cam_pipeline.reports import (
     list_reports,
     save_uploaded_report,
 )
+from cam_pipeline.report_archive import get_archive_report, list_archive_reports
 from ai_research_department.models import ResearchRequest as AiResearchRequest
 from ai_research_department.orchestration.research_director import ResearchDirector
 
@@ -366,6 +367,22 @@ def get_reports(
 @app.get("/api/reports/{report_id}")
 def get_report(report_id: str) -> dict[str, Any]:
     report = get_report_by_id(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    return {"status": "success", "report": report}
+
+
+@app.get("/api/report-archive")
+def get_report_archive(limit: int = 20, offset: int = 0) -> dict[str, Any]:
+    if not 1 <= limit <= 100 or offset < 0:
+        raise HTTPException(status_code=422, detail="Invalid pagination parameters.")
+    reports, total = list_archive_reports(limit=limit, offset=offset)
+    return {"status": "success", "reports": reports, "count": len(reports), "total": total}
+
+
+@app.get("/api/report-archive/{report_id}")
+def get_report_archive_detail(report_id: str) -> dict[str, Any]:
+    report = get_archive_report(report_id)
     if not report:
         raise HTTPException(status_code=404, detail="Report not found.")
     return {"status": "success", "report": report}
