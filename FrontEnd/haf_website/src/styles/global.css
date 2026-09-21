@@ -1890,6 +1890,14 @@ a {
   padding: 56px clamp(20px, 5vw, 64px);
 }
 
+.about-haf-page {
+  margin: 0 auto;
+  max-width: 1180px;
+  padding-left: 24px;
+  padding-right: 24px;
+  width: 100%;
+}
+
 .caifr-footer {
   background: #ffffff;
   border-top: 1px solid rgba(0, 0, 0, 0.07);
