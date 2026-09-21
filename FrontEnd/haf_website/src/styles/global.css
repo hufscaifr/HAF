@@ -2923,6 +2923,14 @@ a {
   padding: 28px 24px 0;
 }
 
+.equity-research-placeholder {
+  margin: 0 auto;
+  max-width: 1180px;
+  padding-left: 10px;
+  padding-right: 10px;
+  width: 100%;
+}
+
 .equity-quick-menu {
   background: #ffffff;
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display',
