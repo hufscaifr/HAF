@@ -57,6 +57,13 @@
 .report-detail__body ul { line-height: 1.75; margin: 16px 0 0; padding-left: 20px; }
 .report-detail__notice { border-top: 1px solid #dfe2e7; color: #7a818d; font-size: 0.82rem; line-height: 1.55; margin: 24px 0 0; padding-top: 18px; }
 .report-detail--empty { min-height: 60vh; }
+.report-chat { border-top: 1px solid #dfe2e7; margin-top: 24px; padding-top: 24px; }
+.report-chat form { display: grid; gap: 10px; margin-top: 12px; }
+.report-chat textarea { background: #fff; border: 1px solid #d7dbe2; border-radius: 12px; color: #252a32; font: inherit; line-height: 1.5; padding: 12px; resize: vertical; width: 100%; }
+.report-chat button { background: #0a4d2e; border: 0; border-radius: 12px; color: #fff; cursor: pointer; font-weight: 700; min-height: 44px; padding: 0 14px; }
+.report-chat button:disabled { cursor: wait; opacity: 0.55; }
+.report-chat__answer { background: #fff; border-radius: 12px; color: #303741; line-height: 1.7; margin-top: 14px; padding: 14px; white-space: pre-wrap; }
+.report-chat__error { color: #a83232; font-size: 0.85rem; margin: 12px 0 0; }
 
 @media (max-width: 760px) {
   .report-detail__hero,

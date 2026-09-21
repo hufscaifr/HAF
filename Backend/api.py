@@ -5,6 +5,7 @@ import hmac
 import json
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -191,6 +192,10 @@ class KrxListingsRefreshRequest(BaseModel):
         default_factory=lambda: ["KOSPI", "KOSDAQ"],
         description="KRX markets to synchronize.",
     )
+
+
+class ReportChatRequest(BaseModel):
+    question: str = Field(..., min_length=2, max_length=500)
 
 
 app = FastAPI(
@@ -386,6 +391,80 @@ def get_report_archive_detail(report_id: str) -> dict[str, Any]:
     if not report:
         raise HTTPException(status_code=404, detail="Report not found.")
     return {"status": "success", "report": report}
+
+
+REPORT_CHAT_MODEL = os.getenv("REPORT_CHAT_MODEL", "qwen3:0.6b")
+REPORT_CHAT_URL = os.getenv("REPORT_CHAT_URL", "http://127.0.0.1:11434/api/chat")
+REPORT_CHAT_LIMIT = int(os.getenv("REPORT_CHAT_LIMIT_PER_MINUTE", "6"))
+report_chat_slots = threading.BoundedSemaphore(value=1)
+report_chat_requests: dict[str, list[float]] = {}
+
+
+def enforce_report_chat_rate_limit(client_ip: str) -> None:
+    now = time.monotonic()
+    recent = [timestamp for timestamp in report_chat_requests.get(client_ip, []) if now - timestamp < 60]
+    if len(recent) >= REPORT_CHAT_LIMIT:
+        raise HTTPException(status_code=429, detail="질문 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.")
+    recent.append(now)
+    report_chat_requests[client_ip] = recent
+
+
+@app.post("/api/report-archive/{report_id}/chat")
+def chat_with_report(report_id: str, payload: ReportChatRequest, request: Request) -> dict[str, Any]:
+    client_ip = request.client.host if request.client else "unknown"
+    enforce_report_chat_rate_limit(client_ip)
+    report = get_archive_report(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    if not report_chat_slots.acquire(blocking=False):
+        raise HTTPException(status_code=503, detail="다른 답변을 생성 중입니다. 잠시 후 다시 시도해 주세요.")
+
+    context = "\n".join(
+        [
+            f"제목: {report['title']}",
+            f"기업/대상: {report['company']}",
+            f"카테고리: {report['category']}",
+            f"설명: {report['desc']}",
+            f"요약: {report['summary']}",
+            "핵심 포인트: " + ", ".join(report["highlights"]),
+        ]
+    )
+    prompt = (
+        "/no_think\n"
+        "아래 보고서 내용만 근거로 한국어로 간결하게 답하세요. "
+        "보고서에 없는 내용은 '보고서에서 확인할 수 없습니다'라고 답하세요.\n\n"
+        f"[보고서]\n{context}\n\n[질문]\n{payload.question.strip()}"
+    )
+    try:
+        response = requests.post(
+            REPORT_CHAT_URL,
+            json={
+                "model": REPORT_CHAT_MODEL,
+                "stream": False,
+                "think": False,
+                "messages": [{"role": "user", "content": prompt}],
+                "options": {"temperature": 0.2, "num_ctx": 2048, "num_predict": 256},
+                "keep_alive": "5m",
+            },
+            timeout=90,
+        )
+        response.raise_for_status()
+        answer = response.json().get("message", {}).get("content", "").strip()
+        if not answer:
+            raise RuntimeError("The local model returned an empty answer.")
+    except Exception as exc:
+        logger.exception("Local report chat failed")
+        raise HTTPException(status_code=503, detail="로컬 AI 모델이 응답하지 않습니다.") from exc
+    finally:
+        report_chat_slots.release()
+
+    return {
+        "status": "success",
+        "answer": answer,
+        "model": REPORT_CHAT_MODEL,
+        "report_id": report_id,
+        "sources": [{"report_id": report_id, "title": report["title"]}],
+    }
 
 
 @app.get("/api/financial-calendar")

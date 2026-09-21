@@ -5,6 +5,10 @@ function ReportsView() {
   const reportId = new URLSearchParams(window.location.search).get('id');
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [question, setQuestion] = useState('');
+  const [answer, setAnswer] = useState('');
+  const [chatting, setChatting] = useState(false);
+  const [chatError, setChatError] = useState('');
 
   useEffect(() => {
     if (!reportId) {
@@ -20,6 +24,28 @@ function ReportsView() {
       .catch(() => setReport(null))
       .finally(() => setLoading(false));
   }, [reportId]);
+
+  const askReport = async (event) => {
+    event.preventDefault();
+    const normalizedQuestion = question.trim();
+    if (normalizedQuestion.length < 2 || chatting) return;
+    setChatting(true);
+    setChatError('');
+    try {
+      const response = await fetch(apiUrl(`/api/report-archive/${encodeURIComponent(reportId)}/chat`), {
+        method: 'POST',
+        headers: { ...API_HEADERS, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: normalizedQuestion }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || '답변을 생성하지 못했습니다.');
+      setAnswer(payload.answer);
+    } catch (requestError) {
+      setChatError(requestError.message);
+    } finally {
+      setChatting(false);
+    }
+  };
 
   if (loading) {
     return <section className="report-detail report-detail--empty"><p>보고서를 불러오는 중입니다.</p></section>;
@@ -58,6 +84,17 @@ function ReportsView() {
             {report.highlights.map((highlight) => <li key={highlight}>{highlight}</li>)}
           </ul>
           {report.is_mock && <p className="report-detail__notice">PostgreSQL에 저장된 검증용 mock 데이터입니다.</p>}
+          <div className="report-chat">
+            <p className="page__eyebrow">Ask this report · Qwen</p>
+            <form onSubmit={askReport}>
+              <textarea value={question} onChange={(event) => setQuestion(event.target.value)} maxLength={500} placeholder="이 보고서에서 중요한 투자 위험은 뭐야?" rows={3} />
+              <button type="submit" disabled={chatting || question.trim().length < 2}>
+                {chatting ? '답변 생성 중…' : '보고서에 질문하기'}
+              </button>
+            </form>
+            {chatError && <p className="report-chat__error" role="alert">{chatError}</p>}
+            {answer && <div className="report-chat__answer">{answer}</div>}
+          </div>
         </aside>
       </section>
     </main>
