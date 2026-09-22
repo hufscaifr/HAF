@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+output/
+logs/
+data/krx_master_cache.csv
