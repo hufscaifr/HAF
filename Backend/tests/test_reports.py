@@ -40,6 +40,7 @@ class ReportsApiTest(unittest.TestCase):
                 "AWS_REGION": "ap-northeast-2",
                 "AWS_S3_BUCKET": "test-report-bucket",
                 "REPORT_PDF_MAX_BYTES": "1048576",
+                "EXPOSE_GENERATED_REPORTS": "true",
             },
         )
         self.env.start()

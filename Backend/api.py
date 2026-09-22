@@ -259,7 +259,6 @@ def require_reports_api_token(authorization: Optional[str]) -> None:
             status_code=503,
             detail="REPORTS_API_TOKEN is not configured.",
         )
-
     scheme, separator, supplied_token = (authorization or "").partition(" ")
     if (
         not separator
@@ -271,6 +270,11 @@ def require_reports_api_token(authorization: Optional[str]) -> None:
             detail="Invalid or missing bearer token.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+
+def require_generated_reports_public() -> None:
+    if os.getenv("EXPOSE_GENERATED_REPORTS", "false").strip().lower() not in {"1", "true", "yes"}:
+        raise HTTPException(status_code=404, detail="Not found.")
 
 
 @app.post("/api/reports", status_code=201)
@@ -396,6 +400,7 @@ def get_reports(
     limit: int = 20,
     offset: int = 0,
 ) -> dict[str, Any]:
+    require_generated_reports_public()
     if not 1 <= limit <= 100:
         raise HTTPException(status_code=422, detail="limit must be between 1 and 100.")
     if offset < 0:
@@ -413,6 +418,7 @@ def get_reports(
 
 @app.get("/api/reports/{report_id}")
 def get_report(report_id: str) -> dict[str, Any]:
+    require_generated_reports_public()
     report = get_report_by_id(report_id)
     if not report:
         raise HTTPException(status_code=404, detail="Report not found.")
@@ -421,6 +427,7 @@ def get_report(report_id: str) -> dict[str, Any]:
 
 @app.get("/api/reports/{report_id}/download")
 def download_report(report_id: str) -> StreamingResponse:
+    require_generated_reports_public()
     report = get_report_by_id(report_id)
     if not report or not report.get("s3_key"):
         raise HTTPException(status_code=404, detail="Report PDF not found.")
@@ -485,6 +492,7 @@ def enforce_report_chat_rate_limit(client_ip: str) -> None:
 
 @app.post("/api/reports/{report_id}/chat")
 def chat_with_uploaded_report(report_id: str, payload: ReportChatRequest, request: Request) -> dict[str, Any]:
+    require_generated_reports_public()
     client_ip = request.client.host if request.client else "unknown"
     enforce_report_chat_rate_limit(client_ip)
     report = get_report_by_id(report_id)

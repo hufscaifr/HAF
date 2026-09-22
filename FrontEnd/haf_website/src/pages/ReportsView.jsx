@@ -3,7 +3,6 @@ import { API_HEADERS, apiUrl } from '../config/api';
 
 function ReportsView() {
   const reportId = new URLSearchParams(window.location.search).get('id');
-  const isMockReport = reportId?.startsWith('mock-');
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
   const [question, setQuestion] = useState('');
@@ -16,8 +15,7 @@ function ReportsView() {
       setLoading(false);
       return;
     }
-    const detailPath = isMockReport ? '/api/report-archive' : '/api/reports';
-    fetch(apiUrl(`${detailPath}/${encodeURIComponent(reportId)}`), { headers: API_HEADERS })
+    fetch(apiUrl(`/api/report-archive/${encodeURIComponent(reportId)}`), { headers: API_HEADERS })
       .then((response) => {
         if (!response.ok) throw new Error('Report not found.');
         return response.json();
@@ -25,7 +23,7 @@ function ReportsView() {
       .then((payload) => setReport(payload.report))
       .catch(() => setReport(null))
       .finally(() => setLoading(false));
-  }, [reportId, isMockReport]);
+  }, [reportId]);
 
   const askReport = async (event) => {
     event.preventDefault();
@@ -34,8 +32,7 @@ function ReportsView() {
     setChatting(true);
     setChatError('');
     try {
-      const chatPath = isMockReport ? '/api/report-archive' : '/api/reports';
-      const response = await fetch(apiUrl(`${chatPath}/${encodeURIComponent(reportId)}/chat`), {
+      const response = await fetch(apiUrl(`/api/report-archive/${encodeURIComponent(reportId)}/chat`), {
         method: 'POST',
         headers: { ...API_HEADERS, 'Content-Type': 'application/json' },
         body: JSON.stringify({ question: normalizedQuestion }),

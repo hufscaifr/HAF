@@ -11,18 +11,12 @@ function ReportArchive({ sectionTitle = 'Research Reports' }) {
   const currentReports = reports.slice(startIndex, startIndex + itemsPerPage);
 
   useEffect(() => {
-    Promise.all([
-      fetch(apiUrl('/api/reports?limit=100'), { headers: API_HEADERS }),
-      fetch(apiUrl('/api/report-archive?limit=100'), { headers: API_HEADERS }),
-    ])
-      .then(async ([generatedResponse, mockResponse]) => {
-        if (!generatedResponse.ok || !mockResponse.ok) throw new Error('보고서 데이터를 불러오지 못했습니다.');
-        const [generatedPayload, mockPayload] = await Promise.all([generatedResponse.json(), mockResponse.json()]);
-        const generatedReports = (generatedPayload.reports || []).filter((report) => report.s3_key || report.content);
-        return [...generatedReports, ...(mockPayload.reports || [])]
-          .sort((left, right) => String(right.date || '').localeCompare(String(left.date || '')));
+    fetch(apiUrl('/api/report-archive?limit=100'), { headers: API_HEADERS })
+      .then((response) => {
+        if (!response.ok) throw new Error('보고서 데이터를 불러오지 못했습니다.');
+        return response.json();
       })
-      .then(setReports)
+      .then((payload) => setReports(payload.reports || []))
       .catch((requestError) => setError(requestError.message));
   }, []);
 
