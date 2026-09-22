@@ -21,6 +21,10 @@ REPORT_FORM = {
     "report_date": "2026-09-18",
     "category": "daily",
     "company": "Samsung Electronics",
+    "description": "Daily market analysis",
+    "summary": "Semiconductors led the market.",
+    "content": "Samsung Electronics and memory demand were analyzed.",
+    "highlights": '["Memory demand", "Foreign inflows"]',
 }
 PDF_BYTES = b"%PDF-1.7\nmock report content\n%%EOF"
 
@@ -87,6 +91,10 @@ class ReportsApiTest(unittest.TestCase):
         self.assertEqual(report["company"], "Samsung Electronics")
         self.assertEqual(report["content_type"], "application/pdf")
         self.assertEqual(report["file_size"], len(PDF_BYTES))
+        self.assertEqual(report["title"], "Daily Market Report")
+        self.assertEqual(report["content"], REPORT_FORM["content"])
+        self.assertEqual(report["highlights"], ["Memory demand", "Foreign inflows"])
+        self.assertFalse(report["is_mock"])
 
     def test_non_pdf_content_is_rejected_before_s3_upload(self) -> None:
         response = self.client.post(

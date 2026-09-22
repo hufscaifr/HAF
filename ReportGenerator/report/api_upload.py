@@ -20,6 +20,7 @@ PDF가 없으면(권한 팝업 미응답 등) 그냥 건너뛴다 - 이 업로�
 파일명은 서버 권장 규칙(YYYYMMDD-report-name.pdf)을 따른다.
 """
 from datetime import datetime
+import json
 from pathlib import Path
 
 import requests
@@ -47,6 +48,10 @@ def post_report(pdf_path: Path | None, context: dict, companies: list[dict], cat
         "report_date": report_date,
         "category": category,
         "company": ", ".join(c["corp_name"] for c in companies),
+        "description": str(context.get("final_title", "")),
+        "summary": str(context.get("final_summary", "")),
+        "content": str(context.get("report_content", "")),
+        "highlights": json.dumps(context.get("report_highlights", []), ensure_ascii=False),
     }
     headers = {"Authorization": f"Bearer {config.REPORT_API_TOKEN}"}
 

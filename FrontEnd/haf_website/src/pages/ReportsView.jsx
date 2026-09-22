@@ -15,7 +15,7 @@ function ReportsView() {
       setLoading(false);
       return;
     }
-    fetch(apiUrl(`/api/report-archive/${encodeURIComponent(reportId)}`), { headers: API_HEADERS })
+    fetch(apiUrl(`/api/reports/${encodeURIComponent(reportId)}`), { headers: API_HEADERS })
       .then((response) => {
         if (!response.ok) throw new Error('Report not found.');
         return response.json();
@@ -32,7 +32,7 @@ function ReportsView() {
     setChatting(true);
     setChatError('');
     try {
-      const response = await fetch(apiUrl(`/api/report-archive/${encodeURIComponent(reportId)}/chat`), {
+      const response = await fetch(apiUrl(`/api/reports/${encodeURIComponent(reportId)}/chat`), {
         method: 'POST',
         headers: { ...API_HEADERS, 'Content-Type': 'application/json' },
         body: JSON.stringify({ question: normalizedQuestion }),
@@ -66,24 +66,26 @@ function ReportsView() {
       <a className="report-detail__back" href="/reports">← Research Reports</a>
       <header className="report-detail__hero">
         <div>
-          <p className="page__eyebrow">{report.category} · {report.is_mock ? 'Mock Report' : 'Research Report'}</p>
+          <p className="page__eyebrow">{report.category || 'HAF'} · Research Report</p>
           <h1>{report.title}</h1>
-          <p className="report-detail__meta">{report.date} · {report.company} · HAF AI Research</p>
+          <p className="report-detail__meta">{report.date} · {report.company || 'HAF'} · HAF AI Research</p>
         </div>
-        <img src={report.thumbnail} alt="" />
+        <div className="report-detail__cover" aria-hidden="true"><span>HAF</span><strong>RESEARCH REPORT</strong></div>
       </header>
       <section className="report-detail__body">
         <article>
           <p className="page__eyebrow">Executive Summary</p>
           <h2>핵심 요약</h2>
-          <p>{report.summary}</p>
+          <p>{report.summary || report.desc || '이 보고서는 PDF 원문으로 제공됩니다.'}</p>
+          {report.content && <div className="report-detail__content">{report.content}</div>}
+          {report.s3_key && <a className="report-detail__download" href={apiUrl(`/api/reports/${encodeURIComponent(reportId)}/download`)} target="_blank" rel="noreferrer">PDF 보고서 열기</a>}
         </article>
         <aside>
           <p className="page__eyebrow">Key Highlights</p>
           <ul>
-            {report.highlights.map((highlight) => <li key={highlight}>{highlight}</li>)}
+            {(report.highlights || []).map((highlight) => <li key={highlight}>{highlight}</li>)}
           </ul>
-          {report.is_mock && <p className="report-detail__notice">PostgreSQL에 저장된 검증용 mock 데이터입니다.</p>}
+          {!report.content && <p className="report-detail__notice">이전 업로드 보고서는 본문 데이터가 없어 PDF만 열 수 있습니다. 새 보고서부터 본문 기반 대화가 지원됩니다.</p>}
           <div className="report-chat">
             <p className="page__eyebrow">Ask this report · Qwen</p>
             <form onSubmit={askReport}>

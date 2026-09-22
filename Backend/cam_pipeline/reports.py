@@ -93,6 +93,9 @@ def ensure_report_upload_columns(conn: sqlite3.Connection) -> None:
         "original_filename": "TEXT",
         "content_type": "TEXT",
         "file_size": "INTEGER",
+        "description": "TEXT NOT NULL DEFAULT ''",
+        "content": "TEXT NOT NULL DEFAULT ''",
+        "highlights_json": "TEXT NOT NULL DEFAULT '[]'",
     }
     for column_name, column_type in upload_columns.items():
         if column_name not in existing_columns:
@@ -111,6 +114,10 @@ def save_uploaded_report(
     original_filename: str,
     content_type: str,
     file_size: int,
+    description: str = "",
+    summary: str = "",
+    content: str = "",
+    highlights: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     normalized_date = normalize_date(report_date)
     now = utc_now()
@@ -125,13 +132,14 @@ def save_uploaded_report(
                 report_id, ingestion_key, title, subtitle, paragraph_title,
                 summary, generate_date, author, report_date, category, company,
                 s3_key, original_filename, content_type, file_size,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, '', '', '', ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                description, content, highlights_json, created_at, updated_at
+            ) VALUES (?, ?, ?, '', '', ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 report_id,
                 ingestion_key,
                 title.strip(),
+                summary.strip(),
                 normalized_date,
                 normalized_date,
                 category.strip(),
@@ -140,6 +148,9 @@ def save_uploaded_report(
                 original_filename,
                 content_type,
                 file_size,
+                description.strip(),
+                content.strip(),
+                json.dumps(highlights or [], ensure_ascii=False),
                 now,
                 now,
             ),
@@ -280,6 +291,7 @@ def get_report_by_id(
             SELECT report_id, title, subtitle, paragraph_title, summary,
                    generate_date, author, report_date, category, company,
                    s3_key, original_filename, content_type, file_size,
+                   description, content, highlights_json,
                    created_at, updated_at
             FROM reports
             WHERE report_id = ?
@@ -341,21 +353,39 @@ def serialize_report(
         }
         for row in company_rows
     ]
+    try:
+        highlights = json.loads(report_row["highlights_json"] or "[]")
+    except (json.JSONDecodeError, TypeError):
+        highlights = []
+    if not isinstance(highlights, list):
+        highlights = []
+
+    title = report_row["title"]
+    report_date = report_row["report_date"] or report_row["generate_date"]
+    description = report_row["description"] or report_row["subtitle"] or report_row["summary"]
     payload: dict[str, Any] = {
         "id": report_row["report_id"],
-        "Title": report_row["title"],
+        "Title": title,
+        "title": title,
         "subtitle": report_row["subtitle"],
         "paragraph_title": report_row["paragraph_title"],
         "summary": report_row["summary"],
         "generate_date": report_row["generate_date"],
         "author": report_row["author"],
-        "report_date": report_row["report_date"] or report_row["generate_date"],
+        "report_date": report_date,
+        "date": report_date,
         "category": report_row["category"],
         "company": report_row["company"],
         "s3_key": report_row["s3_key"],
         "original_filename": report_row["original_filename"],
         "content_type": report_row["content_type"],
         "file_size": report_row["file_size"],
+        "desc": description,
+        "description": description,
+        "content": report_row["content"] or "",
+        "highlights": [str(item) for item in highlights if str(item).strip()],
+        "thumbnail": None,
+        "is_mock": False,
         "companies": companies,
         "created_at": report_row["created_at"],
         "updated_at": report_row["updated_at"],

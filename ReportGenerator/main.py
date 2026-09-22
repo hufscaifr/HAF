@@ -71,6 +71,12 @@ def _build_report(article_title: str, article_summary: str, article_key_sentence
     final_title, final_summary = generate_final_title_summary(full_text)
     context["final_title"] = final_title
     context["final_summary"] = final_summary
+    context["report_content"] = full_text
+    context["report_highlights"] = [
+        _plain(context.get(f"company{i}_summary", ""))
+        for i in range(1, len(companies) + 1)
+        if _plain(context.get(f"company{i}_summary", ""))
+    ]
     context["date"] = datetime.now().strftime("%Y.%m.%d")
 
     print("문서 생성 중...")

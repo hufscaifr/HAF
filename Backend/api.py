@@ -17,6 +17,7 @@ from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadF
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import RedirectResponse
 from pydantic import BaseModel, Field, HttpUrl, ValidationError
 
 from cam_pipeline.company_selector import (
@@ -278,6 +279,10 @@ def create_report(
     report_date: str = Form(...),
     category: str = Form(...),
     company: Optional[str] = Form(default=None),
+    description: str = Form(default=""),
+    summary: str = Form(default=""),
+    content: str = Form(default=""),
+    highlights: str = Form(default="[]"),
     authorization: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
     require_reports_api_token(authorization)
@@ -288,6 +293,15 @@ def create_report(
         raise HTTPException(status_code=422, detail="title must not be empty.")
     if not normalized_category:
         raise HTTPException(status_code=422, detail="category must not be empty.")
+    if len(content) > 250_000:
+        raise HTTPException(status_code=413, detail="report content is too large.")
+    try:
+        parsed_highlights = json.loads(highlights)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail="highlights must be a JSON array.") from exc
+    if not isinstance(parsed_highlights, list) or any(not isinstance(item, str) for item in parsed_highlights):
+        raise HTTPException(status_code=422, detail="highlights must be a JSON array of strings.")
+    parsed_highlights = [item.strip() for item in parsed_highlights if item.strip()][:10]
     if file.content_type != "application/pdf":
         raise HTTPException(status_code=400, detail="PDF 파일만 업로드할 수 있습니다.")
 
@@ -339,6 +353,10 @@ def create_report(
             original_filename=file.filename or "report.pdf",
             content_type="application/pdf",
             file_size=file_size,
+            description=description,
+            summary=summary,
+            content=content,
+            highlights=parsed_highlights,
         )
     except Exception as exc:
         if uploaded and s3 is not None:
@@ -391,6 +409,28 @@ def get_report(report_id: str) -> dict[str, Any]:
     return {"status": "success", "report": report}
 
 
+@app.get("/api/reports/{report_id}/download")
+def download_report(report_id: str) -> RedirectResponse:
+    report = get_report_by_id(report_id)
+    if not report or not report.get("s3_key"):
+        raise HTTPException(status_code=404, detail="Report PDF not found.")
+    try:
+        region, bucket = get_report_s3_settings()
+        url = boto3.client("s3", region_name=region).generate_presigned_url(
+            "get_object",
+            Params={
+                "Bucket": bucket,
+                "Key": report["s3_key"],
+                "ResponseContentDisposition": "inline",
+            },
+            ExpiresIn=300,
+        )
+    except Exception as exc:
+        logger.exception("Failed to create report download URL")
+        raise HTTPException(status_code=503, detail="보고서 파일을 열 수 없습니다.") from exc
+    return RedirectResponse(url=url, status_code=307)
+
+
 @app.get("/api/report-archive")
 def get_report_archive(limit: int = 20, offset: int = 0) -> dict[str, Any]:
     if not 1 <= limit <= 100 or offset < 0:
@@ -421,6 +461,80 @@ def enforce_report_chat_rate_limit(client_ip: str) -> None:
         raise HTTPException(status_code=429, detail="질문 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.")
     recent.append(now)
     report_chat_requests[client_ip] = recent
+
+
+@app.post("/api/reports/{report_id}/chat")
+def chat_with_uploaded_report(report_id: str, payload: ReportChatRequest, request: Request) -> dict[str, Any]:
+    client_ip = request.client.host if request.client else "unknown"
+    enforce_report_chat_rate_limit(client_ip)
+    report = get_report_by_id(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found.")
+
+    report_content = (report.get("content") or "").strip()
+    fallback_parts = [
+        report.get("description") or report.get("desc") or "",
+        report.get("summary") or "",
+        *report.get("highlights", []),
+        *[
+            value
+            for company in report.get("companies", [])
+            for value in (company.get("opinion_summary", ""), company.get("ta_summary", ""))
+        ],
+    ]
+    evidence = report_content or "\n".join(part for part in fallback_parts if part).strip()
+    if not evidence:
+        raise HTTPException(
+            status_code=422,
+            detail="이 보고서는 본문이 저장되지 않아 아직 대화할 수 없습니다.",
+        )
+    if not report_chat_slots.acquire(blocking=False):
+        raise HTTPException(status_code=503, detail="다른 답변을 생성 중입니다. 잠시 후 다시 시도해 주세요.")
+
+    context = "\n".join(
+        [
+            f"제목: {report['title']}",
+            f"기업/대상: {report.get('company') or ''}",
+            f"카테고리: {report.get('category') or ''}",
+            f"보고서 내용:\n{evidence[:12000]}",
+        ]
+    )
+    prompt = (
+        "/no_think\n"
+        "아래 보고서 내용만 근거로 한국어로 간결하게 답하세요. "
+        "보고서에 없는 내용은 '보고서에서 확인할 수 없습니다'라고 답하세요.\n\n"
+        f"[보고서]\n{context}\n\n[질문]\n{payload.question.strip()}"
+    )
+    try:
+        response = requests.post(
+            REPORT_CHAT_URL,
+            json={
+                "model": REPORT_CHAT_MODEL,
+                "stream": False,
+                "think": False,
+                "messages": [{"role": "user", "content": prompt}],
+                "options": {"temperature": 0.2, "num_ctx": 4096, "num_predict": 256},
+                "keep_alive": "5m",
+            },
+            timeout=90,
+        )
+        response.raise_for_status()
+        answer = response.json().get("message", {}).get("content", "").strip()
+        if not answer:
+            raise RuntimeError("The local model returned an empty answer.")
+    except Exception as exc:
+        logger.exception("Local uploaded-report chat failed")
+        raise HTTPException(status_code=503, detail="로컬 AI 모델이 응답하지 않습니다.") from exc
+    finally:
+        report_chat_slots.release()
+
+    return {
+        "status": "success",
+        "answer": answer,
+        "model": REPORT_CHAT_MODEL,
+        "report_id": report_id,
+        "sources": [{"report_id": report_id, "title": report["title"]}],
+    }
 
 
 @app.post("/api/report-archive/{report_id}/chat")

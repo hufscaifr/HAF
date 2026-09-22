@@ -33,12 +33,29 @@
   margin: 12px 0 22px;
 }
 
-.report-detail__hero img {
+.report-detail__hero img,
+.report-detail__cover {
   aspect-ratio: 4 / 3;
   border-radius: 28px;
   object-fit: cover;
   width: 100%;
 }
+
+.report-detail__cover,
+.caifr-report-cover {
+  align-items: flex-start;
+  background: linear-gradient(145deg, #073d25, #0d6a40);
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 28px;
+}
+
+.report-detail__cover span,
+.caifr-report-cover span { color: #d6b45f; font-family: Georgia, serif; font-size: 2.5rem; font-weight: 700; }
+.report-detail__cover strong,
+.caifr-report-cover strong { font-size: 0.75rem; letter-spacing: 0.18em; margin-top: 8px; }
 
 .report-detail__meta { color: #6f7784; }
 
@@ -53,6 +70,8 @@
 
 .report-detail__body h2 { font-size: 2rem; margin: 10px 0 18px; }
 .report-detail__body article > p:last-child { color: #3f4652; font-size: 1.15rem; line-height: 1.9; }
+.report-detail__content { color: #3f4652; line-height: 1.85; margin-top: 28px; white-space: pre-wrap; }
+.report-detail__download { background: #0a4d2e; border-radius: 12px; color: #fff; display: inline-block; font-weight: 700; margin-top: 28px; padding: 12px 18px; text-decoration: none; }
 .report-detail__body aside { background: #f5f6f8; border-radius: 22px; padding: 28px; }
 .report-detail__body ul { line-height: 1.75; margin: 16px 0 0; padding-left: 20px; }
 .report-detail__notice { border-top: 1px solid #dfe2e7; color: #7a818d; font-size: 0.82rem; line-height: 1.55; margin: 24px 0 0; padding-top: 18px; }
@@ -2104,6 +2123,8 @@ a {
   transition: transform 500ms cubic-bezier(0.2, 0.8, 0.2, 1);
   width: 100%;
 }
+
+.caifr-report-cover { box-sizing: border-box; height: 100%; width: 100%; }
 
 .caifr-card:hover .caifr-thumbnail {
   transform: scale(1.025);

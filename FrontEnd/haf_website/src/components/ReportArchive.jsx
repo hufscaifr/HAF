@@ -11,12 +11,12 @@ function ReportArchive({ sectionTitle = 'Research Reports' }) {
   const currentReports = reports.slice(startIndex, startIndex + itemsPerPage);
 
   useEffect(() => {
-    fetch(apiUrl('/api/report-archive?limit=100'), { headers: API_HEADERS })
+    fetch(apiUrl('/api/reports?limit=100'), { headers: API_HEADERS })
       .then((response) => {
         if (!response.ok) throw new Error('보고서 데이터를 불러오지 못했습니다.');
         return response.json();
       })
-      .then((payload) => setReports(payload.reports || []))
+      .then((payload) => setReports((payload.reports || []).filter((report) => report.s3_key || report.content)))
       .catch((requestError) => setError(requestError.message));
   }, []);
 
@@ -32,13 +32,20 @@ function ReportArchive({ sectionTitle = 'Research Reports' }) {
           {currentReports.map((report) => (
             <a key={report.id} className="caifr-card" href={`/reports-view?id=${report.id}`}>
               <div className="caifr-thumbnail-wrap">
-                <img className="caifr-thumbnail" src={report.thumbnail} alt="" loading="lazy" />
-                <div className="caifr-play" />
+                {report.thumbnail ? (
+                  <img className="caifr-thumbnail" src={report.thumbnail} alt="" loading="lazy" />
+                ) : (
+                  <div className="caifr-report-cover" aria-hidden="true">
+                    <span>HAF</span>
+                    <strong>RESEARCH REPORT</strong>
+                  </div>
+                )}
+                <div className="caifr-play caifr-play--document" />
               </div>
               <div className="caifr-content">
-                <div className="caifr-date">{report.date} · {report.category}</div>
+                <div className="caifr-date">{report.date} · {report.category || 'Research'}</div>
                 <h2 className="caifr-video-title">{report.title}</h2>
-                <p className="caifr-desc">{report.desc}</p>
+                <p className="caifr-desc">{report.desc || report.company || 'HAF AI Research 보고서'}</p>
               </div>
             </a>
           ))}
