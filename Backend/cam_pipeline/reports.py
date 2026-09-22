@@ -8,12 +8,15 @@ import sqlite3
 import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, BinaryIO, Optional
+
+from pypdf import PdfReader
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPORTS_DB_PATH = PROJECT_ROOT / "reports.db"
 DEFAULT_REPORT_PDF_MAX_BYTES = 25 * 1024 * 1024
+DEFAULT_REPORT_TEXT_MAX_CHARS = 250_000
 
 
 def get_reports_db_path() -> Path:
@@ -160,6 +163,44 @@ def save_uploaded_report(
     if not report:
         raise RuntimeError("The uploaded report was not found after saving.")
     return report
+
+
+def extract_pdf_text(file_object: BinaryIO, max_chars: int = DEFAULT_REPORT_TEXT_MAX_CHARS) -> str:
+    current_position = file_object.tell()
+    try:
+        file_object.seek(0)
+        pages: list[str] = []
+        current_length = 0
+        for page in PdfReader(file_object).pages:
+            page_text = (page.extract_text() or "").strip()
+            if not page_text:
+                continue
+            remaining = max_chars - current_length
+            if remaining <= 0:
+                break
+            pages.append(page_text[:remaining])
+            current_length += len(pages[-1]) + 2
+        return "\n\n".join(pages).strip()
+    finally:
+        file_object.seek(current_position)
+
+
+def update_report_text(report_id: str, content: str, summary: str = "") -> None:
+    normalized_content = content.strip()[:DEFAULT_REPORT_TEXT_MAX_CHARS]
+    normalized_summary = summary.strip() or normalized_content[:700]
+    with connect_reports_db() as conn:
+        init_reports_db(conn)
+        conn.execute(
+            """
+            UPDATE reports
+            SET content = ?, summary = CASE WHEN summary = '' THEN ? ELSE summary END,
+                description = CASE WHEN description = '' THEN ? ELSE description END,
+                updated_at = ?
+            WHERE report_id = ?
+            """,
+            (normalized_content, normalized_summary, normalized_summary, utc_now(), report_id),
+        )
+        conn.commit()
 
 
 def get_report_s3_settings() -> tuple[str, str]:

@@ -17,7 +17,7 @@ from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadF
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import RedirectResponse
+from starlette.responses import StreamingResponse
 from pydantic import BaseModel, Field, HttpUrl, ValidationError
 
 from cam_pipeline.company_selector import (
@@ -77,6 +77,7 @@ from cam_pipeline.reports import (
     get_report_by_id,
     get_report_pdf_max_bytes,
     get_report_s3_settings,
+    extract_pdf_text,
     list_reports,
     save_uploaded_report,
 )
@@ -330,6 +331,15 @@ def create_report(
             detail=f"PDF file exceeds the {max_bytes}-byte upload limit.",
         )
 
+    normalized_content = content.strip()
+    if not normalized_content:
+        try:
+            normalized_content = extract_pdf_text(file.file)
+        except Exception:
+            logger.exception("Failed to extract report PDF text during upload")
+        finally:
+            file.file.seek(0)
+
     s3 = None
     uploaded = False
     try:
@@ -355,7 +365,7 @@ def create_report(
             file_size=file_size,
             description=description,
             summary=summary,
-            content=content,
+            content=normalized_content,
             highlights=parsed_highlights,
         )
     except Exception as exc:
@@ -410,25 +420,35 @@ def get_report(report_id: str) -> dict[str, Any]:
 
 
 @app.get("/api/reports/{report_id}/download")
-def download_report(report_id: str) -> RedirectResponse:
+def download_report(report_id: str) -> StreamingResponse:
     report = get_report_by_id(report_id)
     if not report or not report.get("s3_key"):
         raise HTTPException(status_code=404, detail="Report PDF not found.")
     try:
         region, bucket = get_report_s3_settings()
-        url = boto3.client("s3", region_name=region).generate_presigned_url(
-            "get_object",
-            Params={
-                "Bucket": bucket,
-                "Key": report["s3_key"],
-                "ResponseContentDisposition": "inline",
-            },
-            ExpiresIn=300,
+        s3_object = boto3.client("s3", region_name=region).get_object(
+            Bucket=bucket,
+            Key=report["s3_key"],
         )
     except Exception as exc:
         logger.exception("Failed to create report download URL")
         raise HTTPException(status_code=503, detail="보고서 파일을 열 수 없습니다.") from exc
-    return RedirectResponse(url=url, status_code=307)
+    filename = report.get("original_filename") or "report.pdf"
+    headers = {
+        "Content-Disposition": f'inline; filename="{sanitize_download_filename(filename)}"',
+        "Cache-Control": "private, max-age=300",
+    }
+    if s3_object.get("ContentLength") is not None:
+        headers["Content-Length"] = str(s3_object["ContentLength"])
+    return StreamingResponse(
+        s3_object["Body"].iter_chunks(chunk_size=64 * 1024),
+        media_type="application/pdf",
+        headers=headers,
+    )
+
+
+def sanitize_download_filename(filename: str) -> str:
+    return "".join(character for character in Path(filename).name if character.isalnum() or character in "._-") or "report.pdf"
 
 
 @app.get("/api/report-archive")
