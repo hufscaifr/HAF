@@ -1,0 +1,27 @@
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:19<00:00, 19.11s/it]100%|██████████| 1/1 [00:19<00:00, 19.30s/it]
+  0%|          | 0/1 [00:00<?, ?it/s]  0%|          | 0/1 [42:26<?, ?it/s]
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:03<00:00,  3.95s/it]100%|██████████| 1/1 [00:04<00:00,  4.80s/it]
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:22<00:00, 22.11s/it]100%|██████████| 1/1 [00:22<00:00, 22.39s/it]
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:03<00:00,  3.42s/it]100%|██████████| 1/1 [00:03<00:00,  3.51s/it]
+Traceback (most recent call last):
+  File "/Users/jegalminchan/news-analyst-report/run_auto.py", line 26, in main
+    out_path, pdf_path = run_auto()
+                         ^^^^^^^^^^
+  File "/Users/jegalminchan/news-analyst-report/main.py", line 115, in run_auto
+    topic = identify_dominant_topic(headlines)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/jegalminchan/news-analyst-report/analysis/market_topic.py", line 44, in identify_dominant_topic
+    resp = _client.responses.create(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/jegalminchan/news-analyst-report/.venv/lib/python3.11/site-packages/openai/resources/responses/responses.py", line 1022, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/Users/jegalminchan/news-analyst-report/.venv/lib/python3.11/site-packages/openai/_base_client.py", line 1368, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/jegalminchan/news-analyst-report/.venv/lib/python3.11/site-packages/openai/_base_client.py", line 1141, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.RateLimitError: Error code: 429 - {'error': {'message': 'You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.', 'type': 'insufficient_quota', 'param': None, 'code': 'credit_balance_exhausted'}}
+  0%|          | 0/1 [00:00<?, ?it/s]  0%|          | 0/1 [02:00<?, ?it/s]
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:43<00:00, 43.87s/it]100%|██████████| 1/1 [00:43<00:00, 43.94s/it]
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:12<00:00, 12.84s/it]100%|██████████| 1/1 [00:13<00:00, 13.25s/it]
