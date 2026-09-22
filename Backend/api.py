@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -87,6 +88,19 @@ FRAMER_ORIGIN = "https://ambiguous-replacement-035632.framer.app"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 PLOTS_DIR = STATIC_DIR / "plots"
 logger = logging.getLogger(__name__)
+_research_lock_guard = threading.Lock()
+_research_locks: weakref.WeakValueDictionary[str, threading.Lock] = (
+    weakref.WeakValueDictionary()
+)
+
+
+def get_research_lock(signature: str) -> threading.Lock:
+    with _research_lock_guard:
+        lock = _research_locks.get(signature)
+        if lock is None:
+            lock = threading.Lock()
+            _research_locks[signature] = lock
+        return lock
 
 
 class NewResearchRequest(BaseModel):
@@ -551,10 +565,31 @@ def run_required_three_company_selection(request: NewResearchRequest) -> dict:
         )
     except LLMConfigurationError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except requests.Timeout as exc:
+        raise HTTPException(
+            status_code=408,
+            detail="뉴스 사이트 응답 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요.",
+        ) from exc
+    except requests.HTTPError as exc:
+        upstream_status = exc.response.status_code if exc.response is not None else 502
+        status_messages = {
+            401: "해당 뉴스는 로그인이 필요하여 자동으로 내용을 가져올 수 없습니다.",
+            403: "해당 언론사가 자동 접근을 차단했거나 구독자 전용으로 설정한 뉴스입니다.",
+            404: "뉴스 페이지를 찾을 수 없습니다. 주소가 정확한지 확인해 주세요.",
+            410: "삭제되었거나 더 이상 제공되지 않는 뉴스입니다.",
+            429: "해당 뉴스 사이트의 요청 제한에 도달했습니다. 잠시 후 다시 시도해 주세요.",
+        }
+        raise HTTPException(
+            status_code=upstream_status if upstream_status in status_messages else 502,
+            detail=status_messages.get(
+                upstream_status,
+                "뉴스 사이트에서 정상적인 응답을 받지 못했습니다.",
+            ),
+        ) from exc
     except requests.RequestException as exc:
         raise HTTPException(
             status_code=502,
-            detail=f"Failed to fetch the news article: {exc}",
+            detail="뉴스 사이트에 연결할 수 없습니다. 주소와 네트워크 상태를 확인해 주세요.",
         ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2340,38 +2375,40 @@ def create_new_research(request: NewResearchRequest) -> dict:
         model=request.model,
         article_char_limit=request.article_char_limit,
     )
-    if not request.force_refresh:
-        cached = get_cached_research(signature)
-        if cached:
-            return cached
+    research_lock = get_research_lock(signature)
+    with research_lock:
+        if not request.force_refresh:
+            cached = get_cached_research(signature)
+            if cached:
+                return cached
 
-    result = run_required_three_company_selection(request)
-    companies = build_frontend_company_payload(
-        result["selection"]["companies"]
-    )
-    payload = {
-        "status": "success",
-        "summary": result["selection"].get("summary", ""),
-        "companies": companies,
-        "article": result["article"],
-        "provider": result["provider"],
-        "model": result["model"],
-        "selection": result["selection"],
-        "cache": {
-            "hit": False,
-            "kind": "research_selection",
-        },
-    }
-    research_id = save_research(
-        signature=signature,
-        url=str(request.url),
-        provider=result["provider"],
-        model=result["model"],
-        article_char_limit=request.article_char_limit,
-        payload=payload,
-    )
-    payload["research_id"] = research_id
-    return payload
+        result = run_required_three_company_selection(request)
+        companies = build_frontend_company_payload(
+            result["selection"]["companies"]
+        )
+        payload = {
+            "status": "success",
+            "summary": result["selection"].get("summary", ""),
+            "companies": companies,
+            "article": result["article"],
+            "provider": result["provider"],
+            "model": result["model"],
+            "selection": result["selection"],
+            "cache": {
+                "hit": False,
+                "kind": "research_selection",
+            },
+        }
+        research_id = save_research(
+            signature=signature,
+            url=str(request.url),
+            provider=result["provider"],
+            model=result["model"],
+            article_char_limit=request.article_char_limit,
+            payload=payload,
+        )
+        payload["research_id"] = research_id
+        return payload
 
 
 @app.get("/api/new-research/{research_id}")

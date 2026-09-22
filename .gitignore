@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 .env
 .env.local
+*.pem
 .DS_Store
 .cache/
 ~$*
