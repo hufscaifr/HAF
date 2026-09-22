@@ -2125,6 +2125,7 @@ a {
 }
 
 .caifr-report-cover { box-sizing: border-box; height: 100%; width: 100%; }
+.caifr-mock-badge { align-self: flex-start; background: #fff4d6; border-radius: 999px; color: #765711; font-size: 0.72rem; font-weight: 700; margin-top: 10px; padding: 5px 9px; }
 
 .caifr-card:hover .caifr-thumbnail {
   transform: scale(1.025);

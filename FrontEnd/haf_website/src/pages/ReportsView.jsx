@@ -3,6 +3,7 @@ import { API_HEADERS, apiUrl } from '../config/api';
 
 function ReportsView() {
   const reportId = new URLSearchParams(window.location.search).get('id');
+  const isMockReport = reportId?.startsWith('mock-');
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
   const [question, setQuestion] = useState('');
@@ -15,7 +16,8 @@ function ReportsView() {
       setLoading(false);
       return;
     }
-    fetch(apiUrl(`/api/reports/${encodeURIComponent(reportId)}`), { headers: API_HEADERS })
+    const detailPath = isMockReport ? '/api/report-archive' : '/api/reports';
+    fetch(apiUrl(`${detailPath}/${encodeURIComponent(reportId)}`), { headers: API_HEADERS })
       .then((response) => {
         if (!response.ok) throw new Error('Report not found.');
         return response.json();
@@ -23,7 +25,7 @@ function ReportsView() {
       .then((payload) => setReport(payload.report))
       .catch(() => setReport(null))
       .finally(() => setLoading(false));
-  }, [reportId]);
+  }, [reportId, isMockReport]);
 
   const askReport = async (event) => {
     event.preventDefault();
@@ -32,7 +34,8 @@ function ReportsView() {
     setChatting(true);
     setChatError('');
     try {
-      const response = await fetch(apiUrl(`/api/reports/${encodeURIComponent(reportId)}/chat`), {
+      const chatPath = isMockReport ? '/api/report-archive' : '/api/reports';
+      const response = await fetch(apiUrl(`${chatPath}/${encodeURIComponent(reportId)}/chat`), {
         method: 'POST',
         headers: { ...API_HEADERS, 'Content-Type': 'application/json' },
         body: JSON.stringify({ question: normalizedQuestion }),
@@ -66,7 +69,7 @@ function ReportsView() {
       <a className="report-detail__back" href="/reports">← Research Reports</a>
       <header className="report-detail__hero">
         <div>
-          <p className="page__eyebrow">{report.category || 'HAF'} · Research Report</p>
+          <p className="page__eyebrow">{report.category || 'HAF'} · {report.is_mock ? 'Mock 데이터' : 'Research Report'}</p>
           <h1>{report.title}</h1>
           <p className="report-detail__meta">{report.date} · {report.company || 'HAF'} · HAF AI Research</p>
         </div>
@@ -85,7 +88,8 @@ function ReportsView() {
           <ul>
             {(report.highlights || []).map((highlight) => <li key={highlight}>{highlight}</li>)}
           </ul>
-          {!report.content && <p className="report-detail__notice">이전 업로드 보고서는 본문 데이터가 없어 PDF만 열 수 있습니다. 새 보고서부터 본문 기반 대화가 지원됩니다.</p>}
+          {report.is_mock && <p className="report-detail__notice">PostgreSQL에 저장된 기능 검증용 mock 데이터입니다.</p>}
+          {!report.is_mock && !report.content && <p className="report-detail__notice">이전 업로드 보고서는 본문 데이터가 없어 PDF만 열 수 있습니다. 새 보고서부터 본문 기반 대화가 지원됩니다.</p>}
           <div className="report-chat">
             <p className="page__eyebrow">Ask this report · Qwen</p>
             <form onSubmit={askReport}>
