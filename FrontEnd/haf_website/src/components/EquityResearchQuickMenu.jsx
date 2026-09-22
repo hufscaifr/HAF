@@ -7,7 +7,7 @@ const menuItems = [
   },
   {
     id: 2,
-    label: '기업 분석',
+    label: 'AI 리서치 센터',
     href: '/equity_research/single_equity_analysis',
     icon: CompanyIcon,
   },

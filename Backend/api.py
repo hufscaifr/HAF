@@ -1,23 +1,23 @@
 from __future__ import annotations
 
-import asyncio
 import base64
+import hmac
 import json
+import logging
 import os
-import queue
 import threading
+import time
+import weakref
 from pathlib import Path
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Literal, Optional
 
+import boto3
 import requests
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import StreamingResponse
-from pydantic import BaseModel, Field, HttpUrl
-
-from report_router import router as report_router
+from pydantic import BaseModel, Field, HttpUrl, ValidationError
 
 from cam_pipeline.company_selector import (
     DEFAULT_ARTICLE_CHAR_LIMIT,
@@ -41,6 +41,7 @@ from cam_pipeline.price_plot import (
     DEFAULT_PLOT_PERIOD,
     DEFAULT_RECENT_POINTS,
     generate_report_price_plots,
+    generate_price_plots,
 )
 from cam_pipeline.opinion_engine import derive_company_opinions
 from cam_pipeline.technical_analysis import DEFAULT_RECENT_ROWS, analyze_market_data_companies
@@ -55,17 +56,60 @@ from cam_pipeline.financial_calendar import (
     parse_iso_date,
     refresh_financial_calendar,
 )
+from cam_pipeline.krx_listings import (
+    KrxListingsError,
+    list_krx_listings,
+    lookup_krx_listing,
+    refresh_krx_listings,
+)
+from cam_pipeline.research_cache import (
+    build_company_cache_key,
+    build_research_signature,
+    get_cached_company_analysis,
+    get_cached_research,
+    get_cached_research_by_id,
+    save_company_analysis,
+    save_research,
+)
+from cam_pipeline.reports import (
+    build_report_s3_key,
+    get_report_by_id,
+    get_report_pdf_max_bytes,
+    get_report_s3_settings,
+    list_reports,
+    save_uploaded_report,
+)
+from cam_pipeline.report_archive import get_archive_report, list_archive_reports
+from ai_research_department.models import ResearchRequest as AiResearchRequest
+from ai_research_department.orchestration.research_director import ResearchDirector
 
 
 FRAMER_ORIGIN = "https://ambiguous-replacement-035632.framer.app"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 PLOTS_DIR = STATIC_DIR / "plots"
+logger = logging.getLogger(__name__)
+_research_lock_guard = threading.Lock()
+_research_locks: weakref.WeakValueDictionary[str, threading.Lock] = (
+    weakref.WeakValueDictionary()
+)
+
+
+def get_research_lock(signature: str) -> threading.Lock:
+    with _research_lock_guard:
+        lock = _research_locks.get(signature)
+        if lock is None:
+            lock = threading.Lock()
+            _research_locks[signature] = lock
+        return lock
+
+
 class NewResearchRequest(BaseModel):
     url: HttpUrl = Field(..., description="News article URL to crawl and analyze.")
     provider: Literal["openai", "gemini"] = DEFAULT_PROVIDER
     model: Optional[str] = None
     max_companies: int = Field(default=3, ge=1, le=10)
     article_char_limit: int = Field(default=DEFAULT_ARTICLE_CHAR_LIMIT, ge=1000, le=50000)
+    force_refresh: bool = False
 
 
 class ChartResearchRequest(NewResearchRequest):
@@ -75,6 +119,58 @@ class ChartResearchRequest(NewResearchRequest):
     intraday_plot_period: str = DEFAULT_PLOT_PERIOD
     intraday_plot_interval: str = DEFAULT_PLOT_INTERVAL
     intraday_recent_points: int = Field(default=DEFAULT_RECENT_POINTS, ge=5, le=500)
+    recent_rows: int = Field(default=DEFAULT_RECENT_ROWS, ge=1, le=30)
+
+
+class AiResearchRunRequest(BaseModel):
+    company: str = Field(..., min_length=1, max_length=80)
+    ticker: str = ""
+    market: Optional[str] = None
+    research_type: str = "earnings_preview"
+    objective: str = "Build an evidence-linked equity research report."
+    data_mode: Literal["mock", "real"] = "real"
+    price_period: str = "6mo"
+    price_interval: str = "1d"
+    refresh_krx_listings: bool = False
+
+
+class CompanyDashboardRequest(BaseModel):
+    company: dict[str, Any]
+    research_id: Optional[str] = None
+    force_refresh: bool = False
+    provider: Literal["openai", "gemini"] = DEFAULT_PROVIDER
+    model: Optional[str] = None
+    daily_plot_period: str = DEFAULT_DAILY_PLOT_PERIOD
+    daily_plot_interval: str = DEFAULT_DAILY_PLOT_INTERVAL
+    daily_recent_points: int = Field(default=DEFAULT_DAILY_RECENT_POINTS, ge=5, le=500)
+    intraday_plot_period: str = DEFAULT_PLOT_PERIOD
+    intraday_plot_interval: str = DEFAULT_PLOT_INTERVAL
+    intraday_recent_points: int = Field(default=DEFAULT_RECENT_POINTS, ge=5, le=500)
+    recent_rows: int = Field(default=DEFAULT_RECENT_ROWS, ge=1, le=30)
+
+
+class CompanyFinancialsRequest(BaseModel):
+    company: dict[str, Any]
+    research_id: Optional[str] = None
+    force_refresh: bool = False
+    provider: Literal["openai", "gemini"] = DEFAULT_PROVIDER
+    model: Optional[str] = None
+    daily_plot_period: str = DEFAULT_DAILY_PLOT_PERIOD
+    daily_plot_interval: str = DEFAULT_DAILY_PLOT_INTERVAL
+
+
+class CompanyStageRequest(BaseModel):
+    company: dict[str, Any]
+    research_id: Optional[str] = None
+    force_refresh: bool = False
+    provider: Literal["openai", "gemini"] = DEFAULT_PROVIDER
+    model: Optional[str] = None
+
+
+class CompanyTechnicalDataRequest(CompanyStageRequest):
+    period: str = DEFAULT_DAILY_PLOT_PERIOD
+    interval: str = DEFAULT_DAILY_PLOT_INTERVAL
+    recent_points: int = Field(default=DEFAULT_DAILY_RECENT_POINTS, ge=30, le=500)
     recent_rows: int = Field(default=DEFAULT_RECENT_ROWS, ge=1, le=30)
 
 
@@ -89,8 +185,31 @@ class FinancialCalendarRefreshRequest(BaseModel):
     )
     model: Optional[str] = Field(
         default=None,
-        description="OpenAI model used for calendar collection.",
+        description="OpenAI model used only for event analysis.",
     )
+    providers: Optional[list[Literal["fred", "fomc", "dart", "yfinance", "ecos"]]] = Field(
+        default=None,
+        description="Structured data providers to run. Defaults to all providers.",
+    )
+    analyze: bool = Field(
+        default=True,
+        description="Generate importance, AI comment, and expected impact after collection.",
+    )
+
+
+class KrxListingsRefreshRequest(BaseModel):
+    bas_dd: Optional[str] = Field(
+        default=None,
+        description="KRX base date in YYYYMMDD format. Defaults to the latest data supported by the KRX API.",
+    )
+    markets: list[Literal["KOSPI", "KOSDAQ"]] = Field(
+        default_factory=lambda: ["KOSPI", "KOSDAQ"],
+        description="KRX markets to synchronize.",
+    )
+
+
+class ReportChatRequest(BaseModel):
+    question: str = Field(..., min_length=2, max_length=500)
 
 
 app = FastAPI(
@@ -98,7 +217,6 @@ app = FastAPI(
     description="HTTP API for crawling a news URL and selecting meaningful Korean listed companies.",
     version="0.1.0",
 )
-app.include_router(report_router)
 PLOTS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -107,6 +225,15 @@ allowed_origins = [
     for origin in os.getenv("CAM_CORS_ORIGINS", "*").split(",")
     if origin.strip()
 ]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 class PrivateNetworkAccessMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
@@ -118,18 +245,240 @@ class PrivateNetworkAccessMiddleware(BaseHTTPMiddleware):
 app.add_middleware(PrivateNetworkAccessMiddleware)
 
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+def require_reports_api_token(authorization: Optional[str]) -> None:
+    configured_token = os.getenv("REPORTS_API_TOKEN", "").strip()
+    if not configured_token:
+        raise HTTPException(
+            status_code=503,
+            detail="REPORTS_API_TOKEN is not configured.",
+        )
+
+    scheme, separator, supplied_token = (authorization or "").partition(" ")
+    if (
+        not separator
+        or scheme.lower() != "bearer"
+        or not hmac.compare_digest(supplied_token.strip(), configured_token)
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing bearer token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+@app.post("/api/reports", status_code=201)
+def create_report(
+    file: UploadFile = File(...),
+    title: str = Form(...),
+    report_date: str = Form(...),
+    category: str = Form(...),
+    company: Optional[str] = Form(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    require_reports_api_token(authorization)
+
+    normalized_title = title.strip()
+    normalized_category = category.strip()
+    if not normalized_title:
+        raise HTTPException(status_code=422, detail="title must not be empty.")
+    if not normalized_category:
+        raise HTTPException(status_code=422, detail="category must not be empty.")
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="PDF 파일만 업로드할 수 있습니다.")
+
+    try:
+        s3_key = build_report_s3_key(report_date, file.filename or "report.pdf")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="report_date must use a valid YYYY-MM-DD date.",
+        ) from exc
+
+    first_bytes = file.file.read(5)
+    if first_bytes != b"%PDF-":
+        raise HTTPException(status_code=400, detail="유효한 PDF 파일이 아닙니다.")
+    file.file.seek(0, 2)
+    file_size = file.file.tell()
+    file.file.seek(0)
+    try:
+        max_bytes = get_report_pdf_max_bytes()
+        region, bucket = get_report_s3_settings()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if file_size > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"PDF file exceeds the {max_bytes}-byte upload limit.",
+        )
+
+    s3 = None
+    uploaded = False
+    try:
+        s3 = boto3.client("s3", region_name=region)
+        s3.upload_fileobj(
+            file.file,
+            bucket,
+            s3_key,
+            ExtraArgs={
+                "ContentType": "application/pdf",
+                "ContentDisposition": "inline",
+            },
+        )
+        uploaded = True
+        report = save_uploaded_report(
+            title=normalized_title,
+            report_date=report_date,
+            category=normalized_category,
+            company=company,
+            s3_key=s3_key,
+            original_filename=file.filename or "report.pdf",
+            content_type="application/pdf",
+            file_size=file_size,
+        )
+    except Exception as exc:
+        if uploaded and s3 is not None:
+            try:
+                s3.delete_object(Bucket=bucket, Key=s3_key)
+            except Exception:
+                logger.exception("Failed to clean up S3 object after report upload failure")
+        logger.exception("Report PDF upload failed")
+        raise HTTPException(status_code=502, detail="보고서 업로드에 실패했습니다.") from exc
+    finally:
+        file.file.close()
+
+    return {
+        "status": "success",
+        "success": True,
+        "report_id": report["id"],
+        "title": report["Title"],
+        "report_date": report["report_date"],
+        "category": report["category"],
+        "company": report["company"],
+        "s3_key": report["s3_key"],
+    }
+
+
+@app.get("/api/reports")
+def get_reports(
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, Any]:
+    if not 1 <= limit <= 100:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 100.")
+    if offset < 0:
+        raise HTTPException(status_code=422, detail="offset must be greater than or equal to 0.")
+    reports, total = list_reports(limit=limit, offset=offset)
+    return {
+        "status": "success",
+        "reports": reports,
+        "count": len(reports),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.get("/api/reports/{report_id}")
+def get_report(report_id: str) -> dict[str, Any]:
+    report = get_report_by_id(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    return {"status": "success", "report": report}
+
+
+@app.get("/api/report-archive")
+def get_report_archive(limit: int = 20, offset: int = 0) -> dict[str, Any]:
+    if not 1 <= limit <= 100 or offset < 0:
+        raise HTTPException(status_code=422, detail="Invalid pagination parameters.")
+    reports, total = list_archive_reports(limit=limit, offset=offset)
+    return {"status": "success", "reports": reports, "count": len(reports), "total": total}
+
+
+@app.get("/api/report-archive/{report_id}")
+def get_report_archive_detail(report_id: str) -> dict[str, Any]:
+    report = get_archive_report(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    return {"status": "success", "report": report}
+
+
+REPORT_CHAT_MODEL = os.getenv("REPORT_CHAT_MODEL", "qwen3:0.6b")
+REPORT_CHAT_URL = os.getenv("REPORT_CHAT_URL", "http://127.0.0.1:11434/api/chat")
+REPORT_CHAT_LIMIT = int(os.getenv("REPORT_CHAT_LIMIT_PER_MINUTE", "6"))
+report_chat_slots = threading.BoundedSemaphore(value=1)
+report_chat_requests: dict[str, list[float]] = {}
+
+
+def enforce_report_chat_rate_limit(client_ip: str) -> None:
+    now = time.monotonic()
+    recent = [timestamp for timestamp in report_chat_requests.get(client_ip, []) if now - timestamp < 60]
+    if len(recent) >= REPORT_CHAT_LIMIT:
+        raise HTTPException(status_code=429, detail="질문 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.")
+    recent.append(now)
+    report_chat_requests[client_ip] = recent
+
+
+@app.post("/api/report-archive/{report_id}/chat")
+def chat_with_report(report_id: str, payload: ReportChatRequest, request: Request) -> dict[str, Any]:
+    client_ip = request.client.host if request.client else "unknown"
+    enforce_report_chat_rate_limit(client_ip)
+    report = get_archive_report(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    if not report_chat_slots.acquire(blocking=False):
+        raise HTTPException(status_code=503, detail="다른 답변을 생성 중입니다. 잠시 후 다시 시도해 주세요.")
+
+    context = "\n".join(
+        [
+            f"제목: {report['title']}",
+            f"기업/대상: {report['company']}",
+            f"카테고리: {report['category']}",
+            f"설명: {report['desc']}",
+            f"요약: {report['summary']}",
+            "핵심 포인트: " + ", ".join(report["highlights"]),
+        ]
+    )
+    prompt = (
+        "/no_think\n"
+        "아래 보고서 내용만 근거로 한국어로 간결하게 답하세요. "
+        "보고서에 없는 내용은 '보고서에서 확인할 수 없습니다'라고 답하세요.\n\n"
+        f"[보고서]\n{context}\n\n[질문]\n{payload.question.strip()}"
+    )
+    try:
+        response = requests.post(
+            REPORT_CHAT_URL,
+            json={
+                "model": REPORT_CHAT_MODEL,
+                "stream": False,
+                "think": False,
+                "messages": [{"role": "user", "content": prompt}],
+                "options": {"temperature": 0.2, "num_ctx": 2048, "num_predict": 256},
+                "keep_alive": "5m",
+            },
+            timeout=90,
+        )
+        response.raise_for_status()
+        answer = response.json().get("message", {}).get("content", "").strip()
+        if not answer:
+            raise RuntimeError("The local model returned an empty answer.")
+    except Exception as exc:
+        logger.exception("Local report chat failed")
+        raise HTTPException(status_code=503, detail="로컬 AI 모델이 응답하지 않습니다.") from exc
+    finally:
+        report_chat_slots.release()
+
+    return {
+        "status": "success",
+        "answer": answer,
+        "model": REPORT_CHAT_MODEL,
+        "report_id": report_id,
+        "sources": [{"report_id": report_id, "title": report["title"]}],
+    }
 
 
 @app.get("/api/financial-calendar")
@@ -193,6 +542,8 @@ def refresh_financial_calendar_events(request: FinancialCalendarRefreshRequest) 
             start_date=parsed_start_date,
             end_date=parsed_end_date,
             model=request.model or DEFAULT_FINANCIAL_CALENDAR_MODEL,
+            providers=request.providers,
+            analyze=request.analyze,
         )
     except FinancialCalendarError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -214,10 +565,31 @@ def run_required_three_company_selection(request: NewResearchRequest) -> dict:
         )
     except LLMConfigurationError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except requests.Timeout as exc:
+        raise HTTPException(
+            status_code=408,
+            detail="뉴스 사이트 응답 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요.",
+        ) from exc
+    except requests.HTTPError as exc:
+        upstream_status = exc.response.status_code if exc.response is not None else 502
+        status_messages = {
+            401: "해당 뉴스는 로그인이 필요하여 자동으로 내용을 가져올 수 없습니다.",
+            403: "해당 언론사가 자동 접근을 차단했거나 구독자 전용으로 설정한 뉴스입니다.",
+            404: "뉴스 페이지를 찾을 수 없습니다. 주소가 정확한지 확인해 주세요.",
+            410: "삭제되었거나 더 이상 제공되지 않는 뉴스입니다.",
+            429: "해당 뉴스 사이트의 요청 제한에 도달했습니다. 잠시 후 다시 시도해 주세요.",
+        }
+        raise HTTPException(
+            status_code=upstream_status if upstream_status in status_messages else 502,
+            detail=status_messages.get(
+                upstream_status,
+                "뉴스 사이트에서 정상적인 응답을 받지 못했습니다.",
+            ),
+        ) from exc
     except requests.RequestException as exc:
         raise HTTPException(
             status_code=502,
-            detail=f"Failed to fetch the news article: {exc}",
+            detail="뉴스 사이트에 연결할 수 없습니다. 주소와 네트워크 상태를 확인해 주세요.",
         ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -232,11 +604,16 @@ def build_frontend_company_payload(companies: list[dict]) -> list[dict]:
         score = round(float(company.get("confidence", 0) or 0), 3)
         market = str(company.get("market", "")).strip()
         korean_ticker = safe_normalize_ticker(company.get("ticker", ""))
+        krx_listing = lookup_krx_listing(korean_ticker)
+        if krx_listing:
+            market = str(krx_listing.get("market") or market).strip()
         yahoo_ticker = safe_build_yahoo_symbol(
             ticker=korean_ticker,
             market=market,
         )
         name_ko = str(company.get("company_name_ko", "")).strip()
+        if krx_listing:
+            name_ko = str(krx_listing.get("title") or name_ko).strip()
         name_en = str(company.get("company_name", "")).strip()
 
         frontend_companies.append(
@@ -249,11 +626,71 @@ def build_frontend_company_payload(companies: list[dict]) -> list[dict]:
                 "company_name_ko": name_ko,
                 "korean_ticker": korean_ticker,
                 "market": market,
+                "recommendation_reason": str(
+                    company.get("rationale")
+                    or company.get("recommendation_reason")
+                    or company.get("reason")
+                    or ""
+                ).strip(),
+                "article_relevance": str(company.get("article_relevance", "")).strip(),
+                "ai_opinion": str(
+                    company.get("rationale")
+                    or company.get("article_relevance")
+                    or ""
+                ).strip(),
+                "key_catalysts": company.get("key_catalysts", []),
+                "risks": company.get("risks", []),
                 "risk_analysis": str(company.get("risk_analysis", "")).strip(),
             }
         )
 
     return frontend_companies
+
+
+def normalize_dashboard_company(company: dict[str, Any]) -> dict[str, Any]:
+    market = str(company.get("market", "")).strip().upper()
+    ticker = (
+        company.get("korean_ticker")
+        or company.get("ticker")
+        or company.get("yahoo_symbol")
+        or ""
+    )
+    korean_ticker = safe_normalize_ticker(ticker)
+    krx_listing = lookup_krx_listing(korean_ticker)
+    if krx_listing:
+        market = str(krx_listing.get("market") or market).strip().upper()
+    name_ko = str(
+        company.get("company_name_ko")
+        or company.get("name")
+        or ""
+    ).strip()
+    if krx_listing:
+        name_ko = str(krx_listing.get("title") or name_ko).strip()
+    name_en = str(company.get("company_name") or "").strip()
+    score = company.get("score")
+    if score is None and company.get("score_percent") is not None:
+        try:
+            score = float(company["score_percent"]) / 100
+        except (TypeError, ValueError):
+            score = 0
+
+    return {
+        "company_name": name_en or name_ko,
+        "company_name_ko": name_ko or name_en,
+        "ticker": korean_ticker,
+        "market": market or "KOSPI",
+        "confidence": score or 0,
+        "rationale": (
+            company.get("recommendation_reason")
+            or company.get("ai_opinion")
+            or company.get("reason")
+            or ""
+        ),
+        "article_relevance": company.get("article_relevance") or "",
+        "key_catalysts": company.get("key_catalysts") or company.get("catalysts") or [],
+        "risks": company.get("risks") or [],
+        "risk_analysis": company.get("risk_analysis") or "",
+    }
 
 
 def build_static_file_url(http_request: Request, file_path: str | None) -> Optional[str]:
@@ -336,12 +773,30 @@ def add_chart_urls_to_companies(
     return enriched_companies
 
 
+def ticker_lookup_key(value: Any) -> str:
+    return safe_normalize_ticker(value)
+
+
+def has_useful_payload_value(value: Any) -> bool:
+    if isinstance(value, list):
+        return any(has_useful_payload_value(item) for item in value)
+    if isinstance(value, dict):
+        return any(has_useful_payload_value(item) for item in value.values())
+    return value is not None and value != ""
+
+
 def map_by_ticker(items: list[dict]) -> dict[str, dict]:
-    return {
-        str(item.get("ticker", "")).strip(): item
-        for item in items
-        if str(item.get("ticker", "")).strip()
-    }
+    mapped: dict[str, dict] = {}
+    for item in items:
+        for key in (
+            item.get("korean_ticker"),
+            item.get("ticker"),
+            item.get("yahoo_symbol"),
+        ):
+            ticker = ticker_lookup_key(key)
+            if ticker:
+                mapped[ticker] = item
+    return mapped
 
 
 def format_metric(value: object, suffix: str = "", digits: int = 2) -> Optional[str]:
@@ -431,6 +886,28 @@ def build_financial_metrics(fundamentals: dict) -> dict:
         "report_name": fundamentals.get("report_name"),
         "statement_date": fundamentals.get("statement_date"),
         "source": fundamentals.get("source"),
+        "revenue": round_decimal(metrics.get("revenue")),
+        "previous_revenue": round_decimal(metrics.get("previous_revenue")),
+        "revenue_yoy": round_decimal(metrics.get("revenue_yoy")),
+        "revenue_growth_status": metrics.get("revenue_growth_status"),
+        "operating_income": round_decimal(metrics.get("operating_income")),
+        "previous_operating_income": round_decimal(metrics.get("previous_operating_income")),
+        "operating_income_yoy": round_decimal(metrics.get("operating_income_yoy")),
+        "operating_income_growth_status": metrics.get("operating_income_growth_status"),
+        "net_income": round_decimal(metrics.get("net_income")),
+        "previous_net_income": round_decimal(metrics.get("previous_net_income")),
+        "net_income_yoy": round_decimal(metrics.get("net_income_yoy")),
+        "net_income_growth_status": metrics.get("net_income_growth_status"),
+        "ebitda": round_decimal(metrics.get("ebitda")),
+        "operating_cash_flow": round_decimal(
+            fundamentals.get("raw_indicator_values", {}).get("operating_cash_flow")
+        ),
+        "cash_and_equivalents": round_decimal(
+            fundamentals.get("raw_indicator_values", {}).get("cash_and_equivalents")
+        ),
+        "total_debt": round_decimal(
+            fundamentals.get("raw_indicator_values", {}).get("total_debt")
+        ),
     }
 
 
@@ -1058,7 +1535,11 @@ def add_analysis_to_companies(
     enriched_companies: list[dict] = []
 
     for company in companies:
-        ticker = str(company.get("korean_ticker", "")).strip()
+        ticker = ticker_lookup_key(
+            company.get("korean_ticker")
+            or company.get("ticker")
+            or company.get("yahoo_symbol")
+        )
         selected = selected_by_ticker.get(ticker, {})
         market = market_by_ticker.get(ticker, {})
         technical = technical_by_ticker.get(ticker, {})
@@ -1072,6 +1553,17 @@ def add_analysis_to_companies(
         technical_analysis_text = ai_technical_analysis.get("technical_analysis_text")
         technical_highlights = ai_technical_analysis.get("technical_highlights", [])
         latest_indicators = technical.get("latest_indicators", {})
+        recommendation_reason = (
+            selected.get("rationale")
+            or company.get("recommendation_reason")
+            or company.get("ai_opinion")
+            or selected.get("article_relevance")
+            or company.get("article_relevance")
+        )
+        article_relevance = selected.get("article_relevance") or company.get("article_relevance")
+        key_catalysts = selected.get("key_catalysts") or company.get("key_catalysts", [])
+        risks = selected.get("risks") or company.get("risks", [])
+        risk_analysis = selected.get("risk_analysis") or company.get("risk_analysis")
 
         enriched_companies.append(
             {
@@ -1079,12 +1571,12 @@ def add_analysis_to_companies(
                 "latest_close": market.get("latest_close") or technical.get("latest_close"),
                 "latest_close_date": market.get("end_date") or technical.get("latest_date"),
                 "currency": market.get("currency"),
-                "ai_opinion": selected.get("rationale") or selected.get("article_relevance"),
-                "recommendation_reason": selected.get("rationale"),
-                "article_relevance": selected.get("article_relevance"),
-                "key_catalysts": selected.get("key_catalysts", []),
-                "risks": selected.get("risks", []),
-                "risk_analysis": selected.get("risk_analysis"),
+                "ai_opinion": recommendation_reason,
+                "recommendation_reason": recommendation_reason,
+                "article_relevance": article_relevance,
+                "key_catalysts": key_catalysts,
+                "risks": risks,
+                "risk_analysis": risk_analysis,
                 "technical_opinion": opinion.get("opinion"),
                 "technical_opinion_score": opinion.get("score"),
                 "technical_confidence": opinion.get("confidence"),
@@ -1121,28 +1613,38 @@ def add_analysis_to_companies(
 def build_chart_research_response(
     payload: ChartResearchRequest,
     http_request: Request,
-    progress_callback: Optional[Callable[[int, str, str], None]] = None,
 ) -> dict:
-    def report_progress(progress: int, step: str, message: str) -> None:
-        if progress_callback:
-            progress_callback(progress, step, message)
+    request_started_at = time.perf_counter()
+    stage_started_at = request_started_at
 
-    report_progress(8, "article", "뉴스를 읽고 핵심 내용을 추출하는 중")
+    def log_stage(stage: str) -> None:
+        nonlocal stage_started_at
+        now = time.perf_counter()
+        logger.warning(
+            "company-dashboard stage=%s elapsed=%.2fs total=%.2fs",
+            stage,
+            now - stage_started_at,
+            now - request_started_at,
+        )
+        stage_started_at = now
+
+    logger.warning("company-dashboard started url=%s", payload.url)
     result = run_required_three_company_selection(payload)
     selected_companies = result["selection"]["companies"]
+    log_stage("company_selection")
 
-    report_progress(28, "market", "관련 기업의 주가 데이터를 가져오는 중")
     daily_market_data = fetch_market_data_for_companies(
         companies=selected_companies,
         period=payload.daily_plot_period,
         interval=payload.daily_plot_interval,
     )
+    log_stage("daily_market_data")
     intraday_market_data = fetch_market_data_for_companies(
         companies=selected_companies,
         period=payload.intraday_plot_period,
         interval=payload.intraday_plot_interval,
     )
-    report_progress(48, "analysis", "차트와 기술적 지표를 분석하는 중")
+    log_stage("intraday_market_data")
     plot_results = generate_report_price_plots(
         daily_companies=daily_market_data,
         intraday_companies=intraday_market_data,
@@ -1151,14 +1653,13 @@ def build_chart_research_response(
         intraday_recent_points=payload.intraday_recent_points,
         clear_output_dir=False,
     )
+    log_stage("price_plots")
     technical_companies = analyze_market_data_companies(
         daily_market_data,
         recent_rows=payload.recent_rows,
     )
     opinions = derive_company_opinions(technical_companies)
-    fundamentals_companies = analyze_market_data_fundamentals(daily_market_data)
-
-    report_progress(72, "writing", "기술적 분석과 투자 의견을 작성하는 중")
+    log_stage("technical_opinions")
     try:
         technical_analysis_by_ticker = generate_institutional_technical_analyses(
             technical_companies=technical_companies,
@@ -1170,8 +1671,10 @@ def build_chart_research_response(
     except (LLMConfigurationError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
         technical_analysis_by_ticker = {}
         technical_analysis_error = str(exc)
+    log_stage("technical_llm_analysis")
 
-    report_progress(84, "writing", "재무 분석 글을 작성하는 중")
+    fundamentals_companies = analyze_market_data_fundamentals(daily_market_data)
+    log_stage("fundamentals")
     try:
         financial_analysis_by_ticker = generate_institutional_financial_analyses(
             selected_companies=selected_companies,
@@ -1183,8 +1686,8 @@ def build_chart_research_response(
     except (LLMConfigurationError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
         financial_analysis_by_ticker = {}
         financial_analysis_error = str(exc)
+    log_stage("financial_llm_analysis")
 
-    report_progress(96, "finalizing", "분석 결과를 정리하는 중")
     companies_with_charts = add_chart_urls_to_companies(
         companies=build_frontend_company_payload(selected_companies),
         plot_results=plot_results,
@@ -1199,6 +1702,12 @@ def build_chart_research_response(
         fundamentals_companies=fundamentals_companies,
         financial_analysis_by_ticker=financial_analysis_by_ticker,
         technical_analysis_by_ticker=technical_analysis_by_ticker,
+    )
+    log_stage("response_payload")
+    logger.warning(
+        "company-dashboard completed companies=%d total=%.2fs",
+        len(companies),
+        time.perf_counter() - request_started_at,
     )
 
     return {
@@ -1239,31 +1748,675 @@ def build_chart_research_response(
     }
 
 
-def build_progress_event(progress: int, step: str, message: str) -> dict[str, Any]:
-    return {
-        "type": "progress",
-        "progress": progress,
-        "step": step,
-        "message": message,
-    }
+def handle_chart_research_request(
+    payload: ChartResearchRequest,
+    http_request: Request,
+) -> dict:
+    try:
+        return build_chart_research_response(payload, http_request)
+    except LLMConfigurationError as exc:
+        logger.exception("LLM configuration error while building company dashboard")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except requests.RequestException as exc:
+        logger.exception("External request failed while building company dashboard")
+        raise HTTPException(
+            status_code=502,
+            detail="외부 데이터 요청 중 오류가 발생했습니다.",
+        ) from exc
+    except Exception as exc:
+        logger.exception("Unexpected error while building company dashboard")
+        raise HTTPException(
+            status_code=500,
+            detail=f"company-dashboard 처리 중 오류가 발생했습니다: {exc}",
+        ) from exc
 
 
-@app.post("/api/new-research")
-def create_new_research(request: NewResearchRequest) -> dict:
-    result = run_required_three_company_selection(request)
-    companies = build_frontend_company_payload(
-        result["selection"]["companies"]
+def build_single_company_dashboard_response(
+    payload: CompanyDashboardRequest,
+    http_request: Request,
+) -> dict:
+    request_started_at = time.perf_counter()
+    stage_started_at = request_started_at
+
+    def log_stage(stage: str) -> None:
+        nonlocal stage_started_at
+        now = time.perf_counter()
+        logger.warning(
+            "company-dashboard-single stage=%s elapsed=%.2fs total=%.2fs",
+            stage,
+            now - stage_started_at,
+            now - request_started_at,
+        )
+        stage_started_at = now
+
+    selected_companies = [normalize_dashboard_company(payload.company)]
+    logger.warning(
+        "company-dashboard-single started ticker=%s",
+        selected_companies[0].get("ticker"),
+    )
+
+    daily_market_data = fetch_market_data_for_companies(
+        companies=selected_companies,
+        period=payload.daily_plot_period,
+        interval=payload.daily_plot_interval,
+    )
+    log_stage("daily_market_data")
+    intraday_market_data = fetch_market_data_for_companies(
+        companies=selected_companies,
+        period=payload.intraday_plot_period,
+        interval=payload.intraday_plot_interval,
+    )
+    log_stage("intraday_market_data")
+    plot_results = generate_report_price_plots(
+        daily_companies=daily_market_data,
+        intraday_companies=intraday_market_data,
+        output_dir=str(PLOTS_DIR),
+        daily_recent_points=payload.daily_recent_points,
+        intraday_recent_points=payload.intraday_recent_points,
+        clear_output_dir=False,
+    )
+    log_stage("price_plots")
+    technical_companies = analyze_market_data_companies(
+        daily_market_data,
+        recent_rows=payload.recent_rows,
+    )
+    opinions = derive_company_opinions(technical_companies)
+    log_stage("technical_opinions")
+
+    try:
+        technical_analysis_by_ticker = generate_institutional_technical_analyses(
+            technical_companies=technical_companies,
+            opinions=opinions,
+            provider=payload.provider,
+            model=payload.model,
+        )
+        technical_analysis_error = None
+    except (LLMConfigurationError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+        technical_analysis_by_ticker = {}
+        technical_analysis_error = str(exc)
+    log_stage("technical_llm_analysis")
+
+    companies_with_charts = add_chart_urls_to_companies(
+        companies=build_frontend_company_payload(selected_companies),
+        plot_results=plot_results,
+        http_request=http_request,
+    )
+    companies = add_analysis_to_companies(
+        companies=companies_with_charts,
+        selected_companies=selected_companies,
+        daily_market_data=daily_market_data,
+        technical_companies=technical_companies,
+        opinions=opinions,
+        fundamentals_companies=[],
+        financial_analysis_by_ticker={},
+        technical_analysis_by_ticker=technical_analysis_by_ticker,
+    )
+    log_stage("response_payload")
+    logger.warning(
+        "company-dashboard-single completed ticker=%s total=%.2fs",
+        selected_companies[0].get("ticker"),
+        time.perf_counter() - request_started_at,
     )
 
     return {
         "status": "success",
-        "summary": result["selection"].get("summary", ""),
+        "company": companies[0] if companies else {},
         "companies": companies,
-        "article": result["article"],
-        "provider": result["provider"],
-        "model": result["model"],
-        "selection": result["selection"],
+        "data_strategy": {
+            "analysis_payload": "single_company",
+            "chart_images": "url",
+            "realtime_price_ready": True,
+            "fundamentals_deferred": True,
+        },
+        "charts": {
+            "daily_plot_period": payload.daily_plot_period,
+            "daily_plot_interval": payload.daily_plot_interval,
+            "intraday_plot_period": payload.intraday_plot_period,
+            "intraday_plot_interval": payload.intraday_plot_interval,
+            "companies": plot_results,
+        },
+        "technical_analysis": {
+            "recent_rows": payload.recent_rows,
+            "prompt_version": "institutional_sell_side_v1",
+            "llm_analysis_error": technical_analysis_error,
+            "companies": technical_companies,
+        },
+        "opinions": {
+            "method": "regime_aware_technical_score_engine_v3",
+            "companies": opinions,
+        },
     }
+
+
+def handle_single_company_dashboard_request(
+    payload: CompanyDashboardRequest,
+    http_request: Request,
+) -> dict:
+    company = normalize_dashboard_company(payload.company)
+    ticker = str(company.get("ticker") or "").strip()
+    cache_key = build_company_cache_key(
+        kind="company_dashboard",
+        research_id=payload.research_id,
+        ticker=ticker,
+        provider=payload.provider,
+        model=payload.model,
+    )
+    if not payload.force_refresh:
+        cached = get_cached_company_analysis(cache_key)
+        if cached:
+            return cached
+
+    try:
+        result = build_single_company_dashboard_response(payload, http_request)
+        result["research_id"] = payload.research_id
+        save_company_analysis(
+            cache_key=cache_key,
+            research_id=payload.research_id,
+            ticker=ticker,
+            kind="company_dashboard",
+            payload=result,
+        )
+        return result
+    except LLMConfigurationError as exc:
+        logger.exception("LLM configuration error while building single company dashboard")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except requests.RequestException as exc:
+        logger.exception("External request failed while building single company dashboard")
+        raise HTTPException(
+            status_code=502,
+            detail="외부 데이터 요청 중 오류가 발생했습니다.",
+        ) from exc
+    except Exception as exc:
+        logger.exception("Unexpected error while building single company dashboard")
+        raise HTTPException(
+            status_code=500,
+            detail=f"company-dashboard 처리 중 오류가 발생했습니다: {exc}",
+        ) from exc
+
+
+def build_single_company_financials_response(payload: CompanyFinancialsRequest) -> dict:
+    request_started_at = time.perf_counter()
+    stage_started_at = request_started_at
+
+    def log_stage(stage: str) -> None:
+        nonlocal stage_started_at
+        now = time.perf_counter()
+        logger.warning(
+            "company-financials stage=%s elapsed=%.2fs total=%.2fs",
+            stage,
+            now - stage_started_at,
+            now - request_started_at,
+        )
+        stage_started_at = now
+
+    selected_companies = [normalize_dashboard_company(payload.company)]
+    logger.warning(
+        "company-financials started ticker=%s",
+        selected_companies[0].get("ticker"),
+    )
+
+    daily_market_data = fetch_market_data_for_companies(
+        companies=selected_companies,
+        period=payload.daily_plot_period,
+        interval=payload.daily_plot_interval,
+    )
+    log_stage("daily_market_data")
+
+    fundamentals_companies = analyze_market_data_fundamentals(daily_market_data)
+    log_stage("fundamentals")
+
+    try:
+        financial_analysis_by_ticker = generate_institutional_financial_analyses(
+            selected_companies=selected_companies,
+            fundamentals_companies=fundamentals_companies,
+            provider=payload.provider,
+            model=payload.model,
+        )
+        financial_analysis_error = None
+    except (LLMConfigurationError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+        financial_analysis_by_ticker = {}
+        financial_analysis_error = str(exc)
+    log_stage("financial_llm_analysis")
+
+    companies = add_analysis_to_companies(
+        companies=build_frontend_company_payload(selected_companies),
+        selected_companies=selected_companies,
+        daily_market_data=daily_market_data,
+        technical_companies=[],
+        opinions=[],
+        fundamentals_companies=fundamentals_companies,
+        financial_analysis_by_ticker=financial_analysis_by_ticker,
+        technical_analysis_by_ticker={},
+    )
+    log_stage("response_payload")
+    logger.warning(
+        "company-financials completed ticker=%s total=%.2fs",
+        selected_companies[0].get("ticker"),
+        time.perf_counter() - request_started_at,
+    )
+
+    return {
+        "status": "success",
+        "company": companies[0] if companies else {},
+        "companies": companies,
+        "fundamentals": {
+            "source": "OpenDART",
+            "llm_analysis_error": financial_analysis_error,
+            "companies": fundamentals_companies,
+        },
+    }
+
+
+def handle_single_company_financials_request(payload: CompanyFinancialsRequest) -> dict:
+    company = normalize_dashboard_company(payload.company)
+    ticker = str(company.get("ticker") or "").strip()
+    cache_key = build_company_cache_key(
+        kind="company_financials",
+        research_id=payload.research_id,
+        ticker=ticker,
+        provider=payload.provider,
+        model=payload.model,
+    )
+    if not payload.force_refresh:
+        cached = get_cached_company_analysis(cache_key)
+        if cached:
+            return cached
+
+    try:
+        result = build_single_company_financials_response(payload)
+        result["research_id"] = payload.research_id
+        save_company_analysis(
+            cache_key=cache_key,
+            research_id=payload.research_id,
+            ticker=ticker,
+            kind="company_financials",
+            payload=result,
+        )
+        return result
+    except LLMConfigurationError as exc:
+        logger.exception("LLM configuration error while building single company financials")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except requests.RequestException as exc:
+        logger.exception("External request failed while building single company financials")
+        raise HTTPException(
+            status_code=502,
+            detail="외부 재무 데이터 요청 중 오류가 발생했습니다.",
+        ) from exc
+    except Exception as exc:
+        logger.exception("Unexpected error while building single company financials")
+        raise HTTPException(
+            status_code=500,
+            detail=f"company-financials 처리 중 오류가 발생했습니다: {exc}",
+        ) from exc
+
+
+def build_stage_cache_key(
+    kind: str,
+    payload: CompanyStageRequest,
+    ticker: str,
+    research_scoped: bool = False,
+) -> str:
+    return build_company_cache_key(
+        kind=kind,
+        research_id=payload.research_id if research_scoped else None,
+        ticker=ticker,
+        provider=payload.provider if "analysis" in kind or kind == "company_profile" else "data",
+        model=payload.model if "analysis" in kind or kind == "company_profile" else None,
+    )
+
+
+def run_company_json_analysis(
+    prompt: str,
+    schema: dict[str, Any],
+    schema_name: str,
+    provider: str,
+    model: Optional[str],
+) -> dict[str, Any]:
+    if provider == "openai":
+        api_key = normalize_env_api_key(os.getenv("OPENAI_API_KEY"))
+        if not api_key:
+            raise LLMConfigurationError("OPENAI_API_KEY is not set.")
+        response = get_openai_client_class()(api_key=api_key).responses.create(
+            model=model or os.getenv("OPENAI_MODEL", "gpt-5-mini"),
+            input=prompt,
+            store=False,
+            timeout=float(os.getenv("CAM_COMPANY_AI_TIMEOUT_SECONDS", "60")),
+            text={"format": {"type": "json_schema", "name": schema_name, "strict": True, "schema": schema}},
+        )
+        if not response.output_text:
+            raise RuntimeError("OpenAI returned an empty company analysis response.")
+        return json.loads(response.output_text)
+    if provider == "gemini":
+        genai_module, genai_types_module = get_gemini_modules()
+        api_key = normalize_env_api_key(os.getenv("GEMINI_API_KEY"))
+        if not api_key:
+            raise LLMConfigurationError("GEMINI_API_KEY is not set.")
+        response = genai_module.Client(api_key=api_key).models.generate_content(
+            model=model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+            contents=prompt,
+            config=genai_types_module.GenerateContentConfig(
+                response_mime_type="application/json", response_json_schema=schema,
+            ),
+        )
+        if not response.text:
+            raise RuntimeError("Gemini returned an empty company analysis response.")
+        return json.loads(response.text)
+    raise ValueError(f"Unsupported provider: {provider}")
+
+
+def save_stage_result(
+    cache_key: str,
+    payload: CompanyStageRequest,
+    ticker: str,
+    kind: str,
+    result: dict[str, Any],
+    research_scoped: bool = False,
+) -> dict[str, Any]:
+    save_company_analysis(
+        cache_key=cache_key,
+        research_id=payload.research_id if research_scoped else None,
+        ticker=ticker,
+        kind=kind,
+        payload=result,
+    )
+    return result
+
+
+@app.post("/api/company/profile")
+def get_company_profile(payload: CompanyStageRequest) -> dict:
+    company = normalize_dashboard_company(payload.company)
+    ticker = company["ticker"]
+    cache_key = build_stage_cache_key("company_profile", payload, ticker)
+    if not payload.force_refresh:
+        cached = get_cached_company_analysis(cache_key)
+        if cached:
+            return cached
+
+    schema = {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "overview": {"type": "string"}, "industry": {"type": "string"},
+            "business_model": {"type": "string"},
+            "key_products": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
+        },
+        "required": ["overview", "industry", "business_model", "key_products"],
+    }
+    prompt = f"""
+한국 상장기업 소개 페이지를 작성해 주세요. 확인되지 않은 수치나 최신 실적은 만들지 마세요.
+기업 개요는 3문장 이내, 사업 모델은 2문장 이내의 한국어로 작성하세요.
+
+기업명: {company['company_name_ko']}
+영문명: {company['company_name']}
+종목코드: {ticker}
+소속 시장: {company['market']}
+뉴스 선정 이유: {company.get('rationale', '')}
+""".strip()
+    analysis = run_company_json_analysis(prompt, schema, "company_profile", payload.provider, payload.model)
+    result = {
+        "status": "success",
+        "company": {
+            **build_frontend_company_payload([company])[0],
+            "overview": analysis["overview"], "industry": analysis["industry"],
+            "business_model": analysis["business_model"], "key_products": analysis["key_products"],
+        },
+    }
+    return save_stage_result(cache_key, payload, ticker, "company_profile", result)
+
+
+@app.post("/api/company/technical-data")
+def get_company_technical_data(payload: CompanyTechnicalDataRequest, http_request: Request) -> dict:
+    company = normalize_dashboard_company(payload.company)
+    ticker = company["ticker"]
+    cache_key = build_stage_cache_key("technical_data", payload, ticker)
+    if not payload.force_refresh:
+        cached = get_cached_company_analysis(cache_key)
+        if cached:
+            return cached
+    market_data = fetch_market_data_for_companies([company], period=payload.period, interval=payload.interval)
+    technical = analyze_market_data_companies(market_data, recent_rows=payload.recent_rows)
+    opinions = derive_company_opinions(technical)
+    plots = generate_report_price_plots(
+        daily_companies=market_data, intraday_companies=[], output_dir=str(PLOTS_DIR),
+        daily_recent_points=payload.recent_points, clear_output_dir=False,
+    )
+    display_company = add_chart_urls_to_companies(
+        build_frontend_company_payload([company]), plots, http_request,
+    )[0]
+    technical_item = technical[0] if technical else {}
+    opinion = opinions[0] if opinions else {}
+    display_company.update({
+        "technical_context": technical_item,
+        "technical_summary": {
+            **technical_item.get("latest_indicators", {}),
+            "latest_signal": technical_item.get("latest_signal", {}),
+        },
+        "technical_opinion": opinion.get("opinion"),
+        "opinion_rationale": opinion.get("rationale"),
+        "positives": opinion.get("positives", []), "negatives": opinion.get("negatives", []),
+    })
+    result = {"status": "success", "company": display_company, "source": "yfinance+pandas_ta"}
+    return save_stage_result(cache_key, payload, ticker, "technical_data", result)
+
+
+@app.post("/api/company/technical-analysis")
+def get_company_technical_ai_analysis(payload: CompanyStageRequest) -> dict:
+    company = normalize_dashboard_company(payload.company)
+    ticker = company["ticker"]
+    cache_key = build_stage_cache_key("technical_analysis", payload, ticker)
+    if not payload.force_refresh:
+        cached = get_cached_company_analysis(cache_key)
+        if cached:
+            return cached
+    technical_context = payload.company.get("technical_context")
+    if not isinstance(technical_context, dict) or not technical_context:
+        raise HTTPException(status_code=409, detail="기술 데이터 수집을 먼저 실행해 주세요.")
+    opinion = {
+        "ticker": ticker, "opinion": payload.company.get("technical_opinion"),
+        "rationale": payload.company.get("opinion_rationale"),
+        "positives": payload.company.get("positives", []), "negatives": payload.company.get("negatives", []),
+    }
+    analyses = generate_institutional_technical_analyses(
+        [technical_context], [opinion], payload.provider, payload.model,
+    )
+    analysis = analyses.get(ticker, {})
+    result = {"status": "success", "company": {**payload.company, **analysis}}
+    return save_stage_result(cache_key, payload, ticker, "technical_analysis", result)
+
+
+@app.post("/api/company/financial-data")
+def get_company_financial_data(payload: CompanyStageRequest) -> dict:
+    company = normalize_dashboard_company(payload.company)
+    company["latest_close"] = payload.company.get("latest_close")
+    ticker = company["ticker"]
+    cache_key = build_stage_cache_key("financial_data_v2", payload, ticker)
+    if not payload.force_refresh:
+        cached = get_cached_company_analysis(cache_key)
+        if cached:
+            return cached
+    fundamentals = analyze_market_data_fundamentals([company])
+    item = fundamentals[0] if fundamentals else {}
+    display_company = build_frontend_company_payload([company])[0]
+    display_company.update({
+        "financial_metrics": build_financial_metrics(item),
+        "financial_context": item,
+        "financial_error": item.get("error"),
+    })
+    result = {"status": "success", "company": display_company, "source": "OpenDART"}
+    return save_stage_result(cache_key, payload, ticker, "financial_data_v2", result)
+
+
+@app.post("/api/company/financial-analysis")
+def get_company_financial_ai_analysis(payload: CompanyStageRequest) -> dict:
+    company = normalize_dashboard_company(payload.company)
+    ticker = company["ticker"]
+    cache_key = build_stage_cache_key("financial_analysis_v2", payload, ticker)
+    if not payload.force_refresh:
+        cached = get_cached_company_analysis(cache_key)
+        if cached:
+            return cached
+    financial_context = payload.company.get("financial_context")
+    if not isinstance(financial_context, dict) or not financial_context:
+        raise HTTPException(status_code=409, detail="재무 데이터 수집을 먼저 실행해 주세요.")
+    analyses = generate_institutional_financial_analyses(
+        [company], [financial_context], payload.provider, payload.model,
+    )
+    result = {
+        "status": "success",
+        "company": {**payload.company, "financial_analysis": analyses.get(ticker, "")},
+    }
+    return save_stage_result(cache_key, payload, ticker, "financial_analysis_v2", result)
+
+
+@app.post("/api/company/risk-analysis")
+def get_company_risk_analysis(payload: CompanyStageRequest) -> dict:
+    company = normalize_dashboard_company(payload.company)
+    ticker = company["ticker"]
+    cache_key = build_stage_cache_key("risk_analysis", payload, ticker, research_scoped=True)
+    if not payload.force_refresh:
+        cached = get_cached_company_analysis(cache_key)
+        if cached:
+            return cached
+    research = get_cached_research_by_id(payload.research_id) if payload.research_id else None
+    article = (research or {}).get("article", {})
+    schema = {
+        "type": "object", "additionalProperties": False,
+        "properties": {
+            "risks": {"type": "array", "items": {"type": "string"}, "minItems": 3, "maxItems": 5},
+            "risk_analysis": {"type": "string"},
+        },
+        "required": ["risks", "risk_analysis"],
+    }
+    prompt = f"""
+아래 기업과 뉴스의 투자 리스크를 한국어로 분석해 주세요. 검증되지 않은 사실이나 수치를 만들지 말고,
+핵심 리스크 3~5개와 4~6문장의 짧은 종합 의견을 작성하세요.
+
+기업: {json.dumps(company, ensure_ascii=False)}
+기사 제목: {article.get('title', '')}
+기사 요약: {(research or {}).get('summary', '')}
+기사 관련성: {payload.company.get('article_relevance', '')}
+추천 논리: {payload.company.get('recommendation_reason', '')}
+""".strip()
+    analysis = run_company_json_analysis(prompt, schema, "company_risk_analysis", payload.provider, payload.model)
+    result = {"status": "success", "company": {**payload.company, **analysis}}
+    return save_stage_result(cache_key, payload, ticker, "risk_analysis", result, research_scoped=True)
+
+
+@app.get("/api/krx-listings")
+def get_krx_listings(market: Optional[str] = None, limit: int = 50) -> dict:
+    try:
+        listings = list_krx_listings(market=market, limit=limit)
+    except Exception as exc:
+        logger.exception("Failed to read KRX listings")
+        raise HTTPException(
+            status_code=500,
+            detail=f"KRX 종목 DB 조회 중 오류가 발생했습니다: {exc}",
+        ) from exc
+
+    return {
+        "status": "success",
+        "count": len(listings),
+        "listings": listings,
+    }
+
+
+@app.post("/api/krx-listings/refresh")
+def refresh_krx_listings_api(payload: KrxListingsRefreshRequest = KrxListingsRefreshRequest()) -> dict:
+    try:
+        return refresh_krx_listings(
+            bas_dd=payload.bas_dd,
+            markets=tuple(payload.markets),
+        )
+    except KrxListingsError as exc:
+        logger.exception("KRX listings refresh failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except requests.RequestException as exc:
+        logger.exception("KRX API request failed")
+        raise HTTPException(
+            status_code=502,
+            detail=f"KRX API 요청 중 오류가 발생했습니다: {exc}",
+        ) from exc
+
+
+@app.post("/api/ai-research/krx-listings/refresh")
+def refresh_ai_research_krx_listings_api(payload: KrxListingsRefreshRequest = KrxListingsRefreshRequest()) -> dict:
+    return refresh_krx_listings_api(payload)
+
+
+@app.post("/api/ai-research/run")
+async def run_ai_research_api(payload: AiResearchRunRequest) -> dict:
+    try:
+        director = ResearchDirector()
+        return await director.run_research(
+            AiResearchRequest(
+                company=payload.company.strip(),
+                ticker=payload.ticker.strip(),
+                market=payload.market,
+                research_type=payload.research_type,
+                objective=payload.objective,
+                data_mode=payload.data_mode,
+                price_period=payload.price_period,
+                price_interval=payload.price_interval,
+                refresh_krx_listings=payload.refresh_krx_listings,
+            )
+        )
+    except Exception as exc:
+        logger.exception("AI research workflow failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"AI 리서치 생성 중 오류가 발생했습니다: {exc}",
+        ) from exc
+
+
+@app.post("/api/new-research")
+def create_new_research(request: NewResearchRequest) -> dict:
+    signature = build_research_signature(
+        url=str(request.url),
+        provider=request.provider,
+        model=request.model,
+        article_char_limit=request.article_char_limit,
+    )
+    research_lock = get_research_lock(signature)
+    with research_lock:
+        if not request.force_refresh:
+            cached = get_cached_research(signature)
+            if cached:
+                return cached
+
+        result = run_required_three_company_selection(request)
+        companies = build_frontend_company_payload(
+            result["selection"]["companies"]
+        )
+        payload = {
+            "status": "success",
+            "summary": result["selection"].get("summary", ""),
+            "companies": companies,
+            "article": result["article"],
+            "provider": result["provider"],
+            "model": result["model"],
+            "selection": result["selection"],
+            "cache": {
+                "hit": False,
+                "kind": "research_selection",
+            },
+        }
+        research_id = save_research(
+            signature=signature,
+            url=str(request.url),
+            provider=result["provider"],
+            model=result["model"],
+            article_char_limit=request.article_char_limit,
+            payload=payload,
+        )
+        payload["research_id"] = research_id
+        return payload
+
+
+@app.get("/api/new-research/{research_id}")
+def get_new_research(research_id: str) -> dict:
+    cached = get_cached_research_by_id(research_id)
+    if not cached:
+        raise HTTPException(status_code=404, detail="research_id를 찾을 수 없습니다.")
+    return cached
 
 
 @app.post("/api/new-research-with-charts")
@@ -1271,62 +2424,37 @@ def create_new_research_with_charts(
     payload: ChartResearchRequest,
     http_request: Request,
 ) -> dict:
-    return build_chart_research_response(payload, http_request)
+    return handle_chart_research_request(payload, http_request)
 
 
 @app.post("/api/company-dashboard")
 def get_company_dashboard(
-    payload: ChartResearchRequest,
+    payload: dict[str, Any],
     http_request: Request,
 ) -> dict:
-    return build_chart_research_response(payload, http_request)
-
-
-@app.post("/api/company-dashboard-stream")
-async def stream_company_dashboard(
-    payload: ChartResearchRequest,
-    http_request: Request,
-) -> StreamingResponse:
-    events: queue.Queue[dict[str, Any] | None] = queue.Queue()
-
-    def publish_progress(progress: int, step: str, message: str) -> None:
-        events.put(build_progress_event(progress, step, message))
-
-    def run_analysis() -> None:
-        try:
-            result = build_chart_research_response(
-                payload,
+    try:
+        if "company" in payload:
+            if not has_useful_payload_value(payload.get("company")):
+                raise HTTPException(
+                    status_code=422,
+                    detail="company payload is empty.",
+                )
+            return handle_single_company_dashboard_request(
+                CompanyDashboardRequest(**payload),
                 http_request,
-                progress_callback=publish_progress,
             )
-            events.put({"type": "result", "progress": 100, "data": result})
-        except Exception as exc:
-            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
-            events.put({"type": "error", "detail": detail})
-        finally:
-            events.put(None)
 
-    threading.Thread(target=run_analysis, daemon=True).start()
+        return handle_chart_research_request(
+            ChartResearchRequest(**payload),
+            http_request,
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
-    async def event_stream():
-        yield json.dumps(
-            build_progress_event(3, "queued", "분석 작업을 준비하는 중"),
-            ensure_ascii=False,
-        ) + "\n"
-        while True:
-            event = await asyncio.to_thread(events.get)
-            if event is None:
-                break
-            yield json.dumps(event, ensure_ascii=False) + "\n"
 
-    return StreamingResponse(
-        event_stream(),
-        media_type="application/x-ndjson",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
+@app.post("/api/company-financials")
+def get_company_financials(payload: CompanyFinancialsRequest) -> dict:
+    return handle_single_company_financials_request(payload)
 
 
 @app.post("/api/recommended-companies")
@@ -1346,7 +2474,7 @@ def get_recommended_companies_with_charts(
     payload: ChartResearchRequest,
     http_request: Request,
 ) -> dict:
-    result = build_chart_research_response(payload, http_request)
+    result = handle_chart_research_request(payload, http_request)
     return {
         "status": result["status"],
         "summary": result["summary"],

@@ -186,10 +186,6 @@ Output rules:
 - `confidence` must be a number between 0 and 1.
 - `rationale` must be written in Korean.
 - `article_relevance` must be written in Korean.
-- `key_catalysts` and `risks` should each have 1 to 4 concise items written in Korean.
-- `risk_analysis` must be a deeper Korean risk paragraph of 4 to 7 sentences.
-- In `risk_analysis`, analyze why the news thesis could fail or be delayed. Cover at least three of these where relevant: execution risk, demand uncertainty, valuation burden, earnings translation risk, competitive pressure, policy/regulatory risk, supply-chain risk, margin risk, timing risk, or the risk that the company is only an indirect beneficiary.
-- Write `risk_analysis` in a professional sell-side equity research style for finance professionals. Avoid generic warnings and do not simply repeat the short `risks` list.
 - All explanatory text fields must be written in Korean.
 - Use a warm Korean explanatory tone ending mostly with "~해요", "~이에요", "~일 수 있어요", or "~로 보여요".
 - Avoid stiff report endings such as "~합니다", "~입니다", "~된다", and "~판단된다" unless they are unavoidable for a quoted term.
@@ -227,19 +223,6 @@ def build_selection_schema(
                 },
                 "rationale": {"type": "string"},
                 "article_relevance": {"type": "string"},
-                "key_catalysts": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 4,
-                    "items": {"type": "string"},
-                },
-                "risks": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 4,
-                    "items": {"type": "string"},
-                },
-                "risk_analysis": {"type": "string"},
                 "confidence": {
                     "type": "number",
                     "minimum": 0,
@@ -253,9 +236,6 @@ def build_selection_schema(
                 "market",
                 "rationale",
                 "article_relevance",
-                "key_catalysts",
-                "risks",
-                "risk_analysis",
                 "confidence",
             ],
         },
@@ -290,9 +270,6 @@ def normalize_selection_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "market": str(company.get("market", "")).strip(),
                 "rationale": str(company.get("rationale", "")).strip(),
                 "article_relevance": str(company.get("article_relevance", "")).strip(),
-                "key_catalysts": normalize_string_list(company.get("key_catalysts", [])),
-                "risks": normalize_string_list(company.get("risks", [])),
-                "risk_analysis": str(company.get("risk_analysis", "")).strip(),
                 "confidence": round(float(company.get("confidence", 0)), 3),
             }
         )

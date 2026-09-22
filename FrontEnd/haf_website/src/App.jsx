@@ -15,6 +15,7 @@ import NewResearchResult from './pages/equityResearch/newsResearch/NewResearchRe
 import NewResearchResultDetail from './pages/equityResearch/newsResearch/NewResearchResultDetail';
 import SectorAnalysis from './pages/equityResearch/SectorAnalysis';
 import SingleEquityAnalysis from './pages/equityResearch/SingleEquityAnalysis';
+import { parseResearchPath } from './utils/researchRoutes';
 
 const routes = {
   '/': Home,
@@ -36,7 +37,11 @@ const routes = {
 
 function getPageComponent() {
   const normalizedPath = window.location.pathname.replace(/\/$/, '') || '/';
-  return routes[normalizedPath] || Home;
+  if (routes[normalizedPath]) return routes[normalizedPath];
+  const researchRoute = parseResearchPath(normalizedPath);
+  if (researchRoute?.kind === 'company') return NewResearchResultDetail;
+  if (researchRoute?.kind === 'result') return NewResearchResult;
+  return Home;
 }
 
 function App() {

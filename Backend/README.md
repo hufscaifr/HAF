@@ -44,15 +44,6 @@ python3 main.py opinion "https://example.com/news-article" --provider gemini --j
 
 python3 main.py plot "https://example.com/news-article" --provider openai --recent-points 60 --clear-output-dir
 python3 main.py plot "https://example.com/news-article" --provider gemini --output-dir plots --json
-
-python3 main.py report "https://example.com/news-article" --provider openai --recent-points 60 --output-dir plots --clear-output-dir
-python3 main.py report "https://example.com/news-article" --provider gemini --json
-
-python3 main.py research "https://example.com/news-article" --provider openai --period 6mo --interval 1d
-python3 main.py research "https://example.com/news-article" --provider gemini --json
-
-python3 main.py word-report "https://example.com/news-article" --provider openai --output-dir word_reports --recent-points 60
-python3 main.py word-report "https://example.com/news-article" --provider gemini --json
 ```
 
 ## Backend API for Framer
@@ -80,6 +71,68 @@ The API crawls the article, sends the article text to the configured AI provider
 - `selection.companies`
 - `summary`
 - `companies`
+
+## Report ingestion API
+
+Generated PDF reports can be uploaded to S3 and recorded in SQLite through the
+authenticated endpoint below.
+
+```http
+POST /api/reports
+Content-Type: multipart/form-data
+Authorization: Bearer <REPORTS_API_TOKEN>
+```
+
+Use `multipart/form-data` fields:
+
+- `file`: PDF file
+- `title`: report title
+- `report_date`: valid `YYYY-MM-DD` date
+- `category`: report category such as `daily`
+- `company`: optional company name
+
+```bash
+curl -X POST "http://localhost:8000/api/reports" \
+  -H "Authorization: Bearer $REPORTS_API_TOKEN" \
+  -F "file=@report.pdf;type=application/pdf" \
+  -F "title=Daily Market Report" \
+  -F "report_date=2026-09-18" \
+  -F "category=daily"
+```
+
+Successful response:
+
+```json
+{
+  "status": "success",
+  "success": true,
+  "report_id": "07c676bd-7348-4394-a70e-438921d215eb",
+  "title": "Daily Market Report",
+  "report_date": "2026-09-18",
+  "category": "daily",
+  "company": null,
+  "s3_key": "reports/2026/09/uuid-report.pdf"
+}
+```
+
+Report view endpoints:
+
+```http
+GET /api/reports?limit=20&offset=0
+GET /api/reports/{report_id}
+```
+
+Configuration:
+
+- `REPORTS_API_TOKEN`: bearer token accepted by `POST /api/reports`.
+- `CAM_REPORTS_DB`: optional SQLite path; defaults to `Backend/reports.db`.
+- `AWS_REGION`: AWS region containing the report bucket.
+- `AWS_S3_BUCKET`: private S3 bucket used for PDF files.
+- `REPORT_PDF_MAX_BYTES`: optional upload limit; defaults to 25 MB.
+
+Generate a deployment token with `openssl rand -hex 32`. The report tables are
+created and migrated automatically on the first request. On EC2, credentials are
+resolved from the attached IAM role; do not add access keys to `.env`.
 
 If the frontend only needs the AI-recommended company cards, use:
 
@@ -135,9 +188,31 @@ Response shape:
 
 The `companies` array is forced to exactly three items for the current Framer layout.
 
+### Staged company research API
+
+Company research is split into small, cacheable requests. Opening a company no longer triggers market, technical, DART, and AI analysis in one request.
+
+```text
+POST /api/company/profile             AI company introduction
+POST /api/company/technical-data      yfinance + pandas_ta + chart (no LLM)
+POST /api/company/technical-analysis  AI review of collected technical indicators
+POST /api/company/financial-data      OpenDART metrics (no LLM)
+POST /api/company/financial-analysis  AI review of collected financial metrics
+POST /api/company/risk-analysis       News-scoped AI risk analysis
+```
+
+All endpoints accept `company`, `research_id`, `provider`, `model`, and `force_refresh`. Technical and financial AI endpoints return `409` until their corresponding data endpoint has completed. Stable company stages are cached by ticker; risk analysis is cached by `research_id + ticker` because it depends on the source article.
+
 ### Financial calendar API
 
-The backend can collect major financial calendar events with the OpenAI Responses API web search tool, store them in SQLite, and serve them to the frontend.
+The backend collects calendar facts from structured providers, stores normalized events in SQLite, and uses OpenAI only for importance and market-impact analysis. Collection does not use AI search.
+
+Provider responsibilities:
+- `fred`: official US economic release dates (`FRED_API_KEY`)
+- `fomc`: Federal Reserve FOMC schedule
+- `dart`: filed Korean disclosures (`DART_API_KEY`)
+- `yfinance`: configured company earnings dates
+- `ecos`: optional Bank of Korea release-calendar JSON adapter
 
 By default, the calendar uses a short rolling window from today through 45 days later. The GET endpoint refreshes this near-term window once per day before returning events.
 The collector is intentionally selective: it focuses on medium/high-impact events for Korean investors rather than trying to fill every date. If no reliable events exist in a window, the API can return an empty `events` array.
@@ -149,7 +224,7 @@ GET http://localhost:8000/api/financial-calendar
 Optional query parameters:
 - `start_date`: `YYYY-MM-DD`
 - `end_date`: `YYYY-MM-DD`
-- `category`: `rate`, `economic_indicator`, `earning`, `policy`, `market_holiday`, `auction`, or `other`
+- `category`: `macro`, `earnings`, `disclosure`, `policy`, or `market_holiday`
 - `importance`: `high`, `medium`, or `low`
 - `refresh_if_stale`: `true` or `false`
 - `model`: OpenAI model override for stale refreshes
@@ -164,12 +239,19 @@ Response shape:
   "count": 1,
   "events": [
     {
-      "id": 1,
+      "id": "evt-yfinance-8a1f...",
       "date": "2026-08-20",
       "title": "엔비디아 실적 발표",
-      "category": "earning",
+      "type": "earnings",
       "importance": "high",
-      "detail": "AI 반도체 수요 지속 여부가 주목돼요.",
+      "time": "",
+      "forecast": "0.84",
+      "consensus": "0.84",
+      "previous": null,
+      "actual": null,
+      "detail": "NVDA의 실적 발표 예정일입니다.",
+      "aiComment": "데이터센터 매출과 가이던스가 반도체 투자심리를 좌우합니다.",
+      "expectedImpact": "가이던스가 컨센서스를 상회하면 AI 반도체 밸류체인 강세가 예상됩니다.",
       "country": "US",
       "source_name": "NVIDIA Investor Relations",
       "source_url": "https://investor.nvidia.com/"
@@ -191,7 +273,9 @@ Content-Type: application/json
 
 {
   "start_date": "2026-07-19",
-  "end_date": "2026-09-02"
+  "end_date": "2026-09-02",
+  "providers": ["fred", "fomc", "dart", "yfinance", "ecos"],
+  "analyze": true
 }
 ```
 
@@ -201,20 +285,24 @@ To seed the DB from the backend without running the API server:
 python3 scripts/seed_financial_calendar.py
 ```
 
-The seed script defaults to a 45-day lookahead split into 15-day OpenAI requests. You can override it when needed:
+The seed script splits the lookahead into provider collection windows. Use `--no-analysis` to collect and store facts without an OpenAI call.
 
 ```bash
 python3 scripts/seed_financial_calendar.py --lookahead-days 90 --chunk-days 15
 ```
 
 Configuration:
-- `OPENAI_API_KEY`: required for calendar refresh.
-- `OPENAI_FINANCIAL_CALENDAR_MODEL`: optional, defaults to the existing OpenAI model setting.
+- `FRED_API_KEY`: enables official FRED release-date collection.
+- `DART_API_KEY`: enables OpenDART disclosure collection.
+- `OPENAI_API_KEY`: optional for collection; required only for AI analysis.
+- `OPENAI_FINANCIAL_CALENDAR_MODEL`: optional analysis model.
+- `CAM_FINANCIAL_CALENDAR_ANALYSIS_BATCH_SIZE`: events per AI analysis request, defaults to `25`.
+- `CAM_CALENDAR_EARNINGS_TICKERS`: optional comma-separated Yahoo symbols.
+- `ECOS_RELEASE_CALENDAR_URL`: optional official Bank of Korea calendar JSON feed.
 - `CAM_FINANCIAL_CALENDAR_DB`: optional SQLite path, defaults to `financial_calendar.db` in the project root.
 - `CAM_FINANCIAL_CALENDAR_LOOKAHEAD_DAYS`: optional default API window, defaults to `45`.
 - `OPENAI_FINANCIAL_CALENDAR_TIMEOUT_SECONDS`: optional OpenAI request timeout, defaults to `90`.
-- `OPENAI_FINANCIAL_CALENDAR_SEARCH_CONTEXT_SIZE`: optional web search context size, defaults to `low`.
-- `OPENAI_FINANCIAL_CALENDAR_ALLOWED_DOMAINS`: optional comma-separated web search domain allowlist. Defaults to core sources such as Fed, BOK, BLS, BEA, KOSTAT, KRX, DART, Yahoo Finance, Nasdaq, and major company IR domains.
+- `CAM_CALENDAR_HTTP_TIMEOUT_SECONDS`: provider HTTP timeout, defaults to `20`.
 - `CAM_TIMEZONE`: optional, defaults to `Asia/Seoul`.
 
 If the frontend also needs stock-price chart images, use:
@@ -455,60 +543,3 @@ Implementation note:
 - Step 6 uses `matplotlib` to save PNG charts of recent price and volume movement for each selected company.
 - The chart default is `--period 1d --interval 1m`; use those options if you want a different Yahoo Finance range.
 - Use `--clear-output-dir` if you want old PNG files in the target plot folder removed before each new run.
-
-## Combined Run
-
-The `report` command runs the opinion engine and report chart generation together in one command:
-- Scrape the article
-- Select KOSPI/KOSDAQ companies with an LLM
-- Fetch Yahoo Finance OHLCV data for analysis
-- Fetch DART financial indicators
-- Calculate technical indicators
-- Derive buy/sell opinions
-- Save two report charts per company: a 3-month daily price chart and a 1-minute intraday price/volume chart
-
-Implementation note:
-- `report` keeps the analysis fetch separate from chart fetching, so daily indicators can remain stable while chart images use `--daily-plot-period 3mo --daily-plot-interval 1d` and `--plot-period 1d --plot-interval 1m` by default.
-- `report --clear-output-dir` clears existing PNG charts in the target output folder before saving the new report charts.
-
-## LLM Research Report
-
-The `research` command writes a Korean institutional-style thematic equity research report using the calculated pipeline outputs:
-- Scrape the article
-- Select KOSPI/KOSDAQ companies with an LLM
-- Fetch Yahoo Finance OHLCV data
-- Calculate DART-based financial indicators
-- Calculate technical indicators
-- Derive rule-based opinions
-- Ask the LLM to write a full Korean sell-side style report using only those inputs
-
-Research report outputs include:
-- `llm_report.prompt_version`
-- `llm_report.body`
-
-Implementation note:
-- The report prompt is designed to keep the output conservative and evidence-based.
-- Financial and technical data are passed into the model as structured inputs so the report interprets the calculated metrics instead of inventing external assumptions.
-
-## Microsoft Word Report
-
-The `word-report` command generates a `.docx` research note with charts and tables:
-- Scrape the article
-- Select KOSPI/KOSDAQ companies with an LLM
-- Fetch Yahoo Finance OHLCV data
-- Calculate DART-based financial indicators
-- Calculate technical indicators
-- Derive rule-based opinions
-- Generate the Korean LLM research report
-- Save a Microsoft Word report with:
-  - a top investment-opinion summary table
-  - stock-price plots beneath the company analysis section
-  - a financial analysis table for each company
-
-Word report outputs include:
-- `word_report.document_path`
-- `plots.output_dir`
-
-Implementation note:
-- The report is exported as a Microsoft Word `.docx` file using `python-docx`.
-- The generated document applies different font sizes for the title, section headings, and body text.

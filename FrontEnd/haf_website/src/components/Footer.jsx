@@ -1,4 +1,4 @@
-function Footer({ bgTitle = 'HAFS', noticeText = '인공지능 기반 금융연구 센터' }) {
+function Footer({ bgTitle = 'HAF', noticeText = '인공지능 기반 금융연구 센터' }) {
   return (
     <footer className="caifr-footer">
       <div className="caifr-footer__inner">
@@ -24,7 +24,6 @@ function Footer({ bgTitle = 'HAFS', noticeText = '인공지능 기반 금융연�
 
           <div className="caifr-footer__info-block">
             <span className="caifr-footer__label">CONTACT</span>
-            <p className="caifr-footer__value">TEL : N/A</p>
             <p className="caifr-footer__value">EMAIL : hufscaifr@gmail.com</p>
           </div>
 

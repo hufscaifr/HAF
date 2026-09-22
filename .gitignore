@@ -11,3 +11,6 @@ __pycache__/
 node_modules/
 dist/
 build/
+*.db
+
+Backend/*.db

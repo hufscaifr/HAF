@@ -20,24 +20,29 @@ from cam_pipeline.financial_calendar import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Seed the SQLite financial calendar in smaller OpenAI collection windows.",
+        description="Collect structured financial events, analyze them, and seed SQLite.",
     )
     parser.add_argument(
         "--chunk-days",
         type=int,
-        default=15,
-        help="Number of calendar days to collect per OpenAI request.",
+        default=5,
+        help="Number of calendar days to collect per provider run.",
     )
     parser.add_argument(
         "--lookahead-days",
         type=int,
-        default=45,
-        help="Number of days to collect from today.",
+        default=5,
+        help="Total number of days to collect from today, including today.",
     )
     parser.add_argument(
         "--model",
         default=DEFAULT_FINANCIAL_CALENDAR_MODEL,
-        help="OpenAI model used for collection.",
+        help="OpenAI model used only for analysis.",
+    )
+    parser.add_argument(
+        "--no-analysis",
+        action="store_true",
+        help="Store provider data without AI comments or expected impact.",
     )
     return parser.parse_args()
 
@@ -50,7 +55,7 @@ def main() -> int:
         raise SystemExit("--lookahead-days must be greater than 0.")
 
     start = get_today()
-    final_end = start + timedelta(days=args.lookahead_days)
+    final_end = start + timedelta(days=args.lookahead_days - 1)
     current_start = start
     total = 0
 
@@ -64,6 +69,7 @@ def main() -> int:
             start_date=current_start,
             end_date=current_end,
             model=args.model,
+            analyze=not args.no_analysis,
         )
         inserted_or_updated = int(result.get("inserted_or_updated", 0) or 0)
         total += inserted_or_updated

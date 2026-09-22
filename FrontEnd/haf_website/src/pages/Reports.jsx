@@ -1,7 +1,7 @@
-import CaifrVideoArchive from '../components/CaifrVideoArchive';
+import ReportArchive from '../components/ReportArchive';
 
 function Reports() {
-  return <CaifrVideoArchive />;
+  return <ReportArchive />;
 }
 
 export default Reports;

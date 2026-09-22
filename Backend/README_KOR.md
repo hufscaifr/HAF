@@ -15,9 +15,6 @@
 - **Step 4B**: OpenDART 기반 재무·밸류에이션 지표 수집
 - **Step 5**: 기술적 지표 기반 매수/매도 의견 도출
 - **Step 6**: 선정 기업의 최근 주가 차트 저장
-- **Report**: 기술적 분석, 재무 분석, 투자 의견, 차트 통합
-- **Research**: LLM 기반 한국형 Sell-side 리서치 보고서 생성
-- **Word Report**: `.docx` 형식 리서치 보고서 생성
 - **Backend API**: Framer 프론트엔드 연동용 API 제공
 - **Financial Calendar API**: 주요 금융 이벤트 수집 및 제공
 
@@ -178,58 +175,6 @@ python3 main.py plot "https://example.com/news-article" \
 
 ---
 
-## 3.8 통합 Report 실행
-
-```bash
-python3 main.py report "https://example.com/news-article" \
-  --provider openai \
-  --recent-points 60 \
-  --output-dir plots \
-  --clear-output-dir
-```
-
-```bash
-python3 main.py report "https://example.com/news-article" \
-  --provider gemini \
-  --json
-```
-
----
-
-## 3.9 LLM Research Report 생성
-
-```bash
-python3 main.py research "https://example.com/news-article" \
-  --provider openai \
-  --period 6mo \
-  --interval 1d
-```
-
-```bash
-python3 main.py research "https://example.com/news-article" \
-  --provider gemini \
-  --json
-```
-
----
-
-## 3.10 Microsoft Word Report 생성
-
-```bash
-python3 main.py word-report "https://example.com/news-article" \
-  --provider openai \
-  --output-dir word_reports \
-  --recent-points 60
-```
-
-```bash
-python3 main.py word-report "https://example.com/news-article" \
-  --provider gemini \
-  --json
-```
-
----
-
 # 4. 전체 분석 파이프라인
 
 ```text
@@ -262,10 +207,7 @@ Yahoo Finance OHLCV
        차트 이미지 생성
            │
            ▼
-     Research / Report
-           │
-           ▼
-     Word Report / API
+          API
 ```
 
 ---
@@ -522,110 +464,7 @@ Plot 결과:
 
 ---
 
-# 12. 통합 Report
-
-`report` 명령어는 투자 의견 엔진과 차트 생성을 한 번에 수행합니다.
-
-처리 과정:
-
-1. 뉴스 기사 크롤링
-2. 관련 기업 선정
-3. Yahoo Finance OHLCV 조회
-4. OpenDART 재무 분석
-5. 기술적 지표 계산
-6. 투자 의견 도출
-7. 기업별 차트 생성
-
-각 기업에 대해 두 종류의 차트를 생성합니다.
-
-### 일봉 차트
-
-```text
---daily-plot-period 3mo
---daily-plot-interval 1d
-```
-
-### 장중 차트
-
-```text
---plot-period 1d
---plot-interval 1m
-```
-
-분석용 OHLCV 데이터와 차트용 OHLCV 요청은 별도로 처리됩니다.
-
-이를 통해 기술적 지표의 일관성을 유지하면서 별도의 차트 데이터를 생성할 수 있습니다.
-
----
-
-# 13. LLM Research Report
-
-`research` 명령어는 전체 파이프라인의 분석 결과를 이용해 한국 기관형 주식 리서치 보고서를 생성합니다.
-
-처리 과정:
-
-1. 뉴스 기사 크롤링
-2. 기업 선정
-3. Yahoo Finance 데이터 조회
-4. OpenDART 재무 분석
-5. 기술적 분석
-6. 투자 의견 생성
-7. LLM 기반 리서치 보고서 작성
-
-출력:
-
-- `llm_report.prompt_version`
-- `llm_report.body`
-
-보고서 프롬프트는 **한국 Sell-side 리서치 스타일**을 기준으로 설계되어 있습니다.
-
-모델은 구조화된 재무 및 기술 데이터를 입력받아 다음 내용을 중심으로 해석합니다.
-
-- 투자 포인트
-- 수익성
-- 재무구조
-- 현금흐름
-- 밸류에이션
-- 기술적 모멘텀
-- 주요 위험 요인
-
-외부 데이터를 임의로 생성하기보다 계산된 데이터를 근거로 해석하도록 설계되어 있습니다.
-
----
-
-# 14. Microsoft Word Report
-
-`word-report` 명령어는 분석 결과를 `.docx` 형식의 리서치 노트로 생성합니다.
-
-포함 내용:
-
-- 투자 의견 요약표
-- 기업별 리서치 분석
-- 기업별 주가 차트
-- 재무 분석 테이블
-
-출력:
-
-- `word_report.document_path`
-- `plots.output_dir`
-
-Word 파일 생성에는 다음 라이브러리를 사용합니다.
-
-```text
-python-docx
-```
-
-문서 내에서 다음 요소는 서로 다른 스타일을 적용합니다.
-
-- Report Title
-- Section Heading
-- Body Text
-- Table
-- Chart
-
----
-
-# 15. Framer 연동 Backend API
+# 12. Framer 연동 Backend API
 
 API 서버 실행:
 
@@ -635,7 +474,7 @@ uvicorn api:app --host 0.0.0.0 --port 8000 --reload
 
 ---
 
-## 15.1 New Research API
+## 12.1 New Research API
 
 Framer `/new_research` 페이지에서 뉴스 URL을 전달합니다.
 
@@ -670,7 +509,7 @@ API 처리 과정:
 
 ---
 
-## 15.2 Recommended Companies API
+## 12.2 Recommended Companies API
 
 기업 추천 카드만 필요한 경우 사용합니다.
 
@@ -732,7 +571,7 @@ Response:
 
 ---
 
-## 15.3 Company Dashboard API
+## 12.3 Company Dashboard API
 
 주가 차트 및 상세 기업 분석까지 필요한 경우 사용합니다.
 
@@ -780,7 +619,7 @@ Request:
 
 ---
 
-## 15.4 브라우저 요청 예시
+## 12.4 브라우저 요청 예시
 
 ```javascript
 const response = await fetch(
@@ -815,7 +654,7 @@ https://ambiguous-replacement-035632.framer.app
 
 ---
 
-# 16. 금융 캘린더 API
+# 13. 금융 캘린더 API
 
 OpenAI Responses API의 웹 검색 기능을 활용해 주요 금융 일정을 수집합니다.
 
@@ -944,7 +783,7 @@ python3 scripts/seed_financial_calendar.py \
 
 ---
 
-# 17. 금융 캘린더 환경 변수
+# 14. 금융 캘린더 환경 변수
 
 | 환경 변수 | 설명 | 기본값 |
 |---|---|---|
@@ -972,7 +811,7 @@ python3 scripts/seed_financial_calendar.py \
 
 ---
 
-# 18. 프로젝트의 주요 데이터 소스
+# 15. 프로젝트의 주요 데이터 소스
 
 | 데이터 | Source |
 |---|---|
@@ -982,13 +821,11 @@ python3 scripts/seed_financial_calendar.py \
 | 기술적 지표 | pandas-ta-classic |
 | 재무제표 | OpenDART |
 | 주가 차트 | matplotlib |
-| Research Report | OpenAI / Gemini |
-| Word Report | python-docx |
 | 금융 일정 | OpenAI Web Search + 공식 Source |
 
 ---
 
-# 19. 핵심 분석 지표
+# 16. 핵심 분석 지표
 
 ## 기술적 분석
 
@@ -1024,7 +861,7 @@ python3 scripts/seed_financial_calendar.py \
 
 ---
 
-# 20. 기술 스택
+# 17. 기술 스택
 
 ### Backend
 
@@ -1051,10 +888,6 @@ python3 scripts/seed_financial_calendar.py \
 
 - matplotlib
 
-### Document
-
-- python-docx
-
 ### Database
 
 - SQLite
@@ -1066,9 +899,9 @@ python3 scripts/seed_financial_calendar.py \
 
 ---
 
-# 21. 프로젝트 목표
+# 18. 프로젝트 목표
 
-이 프로젝트의 목표는 뉴스 기반 투자 아이디어 탐색부터 기업 분석, 기술적·재무적 분석, 리서치 보고서 생성까지의 과정을 하나의 자동화된 파이프라인으로 구축하는 것입니다.
+이 프로젝트의 목표는 뉴스 기반 투자 아이디어 탐색부터 기업 분석, 기술적·재무적 분석까지의 과정을 API 서비스로 제공하는 것입니다.
 
 최종적으로 다음과 같은 흐름을 자동화하는 것을 목표로 합니다.
 
@@ -1083,14 +916,7 @@ Technical Analysis
  ↓
 Financial Analysis
  ↓
-Investment Opinion
- ↓
-Research Report
- ↓
-Chart / Word Report
- ↓
 Frontend
 ```
 
 이를 통해 뉴스 이벤트를 빠르게 기업 분석으로 연결하고, 정형 데이터와 LLM을 결합해 구조화된 투자 리서치 결과를 생성하는 것을 목표로 합니다.
-```
